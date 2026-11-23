@@ -246,6 +246,7 @@ export function buildActivity(events: ChangeEvent[], state: DocState, transcript
     // The same item touched twice in a row reads as one change.
     if (prev && prev.headline === d.headline && prev.detail === d.detail && prev.target === d.target) {
       prev.seq = e.seq;
+      prev.undoSeq = e.seq; // undo the latest of the merged changes
       prev.count++;
       prev.quote = quoteOf(e, transcript) ?? prev.quote;
       continue;

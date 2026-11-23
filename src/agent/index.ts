@@ -72,12 +72,19 @@ export interface AgentRuntime {
 
 export class MeetingAgent implements AgentRuntime {
   readonly scribe: Scribe;
+  /**
+   * Consolidation and the final review run concurrently with the scribe's turns, so they get
+   * their own instance: separate tool routing and error state, never the live conversation.
+   */
+  readonly reviewer: Scribe;
   readonly editor: Editor;
   constructor(public config: AgentConfig = configFromEnv()) {
     this.scribe = new Scribe(config);
+    this.reviewer = new Scribe(config);
     this.editor = new Editor({ model: config.editorModel, effort: config.editorEffort });
   }
   step(input: StepInput): Promise<StepResult> {
+    if (input.mode === "consolidate" || input.mode === "review") return this.reviewer.step(input);
     return this.scribe.step(input);
   }
   edit(input: EditInput): Promise<StepResult> {

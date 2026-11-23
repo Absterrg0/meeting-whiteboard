@@ -213,13 +213,14 @@ async function openSaved(name: string): Promise<MeetingSession | null> {
         .map((e) => ({ ...e, kind: inferKind(e) }))
     : [];
   disposeAll();
-  const id = `saved-${name}`.slice(0, 120);
-  const s = new MeetingSession({ id, title: state.meeting.title || name, agent: NO_AGENT, manual: true, reviewOnFinish: false });
-  s.transcript = savedTranscript(name, dir);
-  s.state = state;
-  s.events = events;
+  // Same id and directory as the recording, so edits and undos made now are saved with it.
+  const id = name;
+  const s = new MeetingSession({ id, title: state.meeting.title || name, agent: NO_AGENT, manual: true, reviewOnFinish: false, outDir: OUT_DIR });
+  s.loadRecorded(events, savedTranscript(name, dir));
+  // Sessions recorded before topics/events were complete may not rebuild; keep their saved state then.
+  if (Object.keys(s.state.items).length < Object.keys(state.items).length) s.state = state;
   sessions.set(id, s);
-  sessionMeta.set(id, { createdAt: statSync(join(dir, "state.json")).mtimeMs, readOnly: true });
+  sessionMeta.set(id, { createdAt: statSync(join(dir, "state.json")).mtimeMs, readOnly: false });
   await s.finish(); // marks every line processed (the no-op agent) and stops the clock
   // From here on, edits and undo are live: the editor keeps the diagram and summary in step.
   s.attachAgent(new MeetingAgent(configFromEnv()));

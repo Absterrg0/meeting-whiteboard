@@ -191,6 +191,25 @@ export class MeetingSession extends EventEmitter {
   }
 
   /**
+   * Load a recorded session: the state is rebuilt from its event log (the log is the source
+   * of truth), with earlier undos applied.
+   */
+  loadRecorded(events: ChangeEvent[], transcript: Utterance[]) {
+    this.transcript = transcript;
+    this.events = events;
+    for (const e of events) {
+      if (e.op !== "undo") continue;
+      const input = e.input as { seq?: number; dependents?: number[] };
+      const at = { at: e.at, by: e.seq };
+      for (const n of [input.seq, ...(input.dependents ?? [])]) {
+        const target = events.find((x) => x.seq === n);
+        if (target) target.reverted = at;
+      }
+    }
+    this.state = replay(events, transcript, new Set()).state;
+  }
+
+  /**
    * Hand a loaded (finished) session a real agent and switch it to automatic scheduling,
    * so human edits and undo keep the diagram and summary consistent (the editor runs).
    */
@@ -512,7 +531,8 @@ export class MeetingSession extends EventEmitter {
         fresh: [],
         mode: "consolidate",
         windowSec,
-        notices: this.notices.splice(0),
+        // A copy: the scribe's own next turn must still see these.
+        notices: [...this.notices],
         signal: this.abort.signal,
         apply: this.applier("agent", transcript, meetingTime, (e) => {
           this.notices.push(`[consolidation] ${e.summary}`);
@@ -649,7 +669,13 @@ export class MeetingSession extends EventEmitter {
     if (!target) return { ok: false, error: `no change #${seq}` };
     if (target.reverted) return { ok: false, error: `change #${seq} was already undone` };
     if (target.op === "undo") return { ok: false, error: "an undo can't be undone; make the change again instead" };
-    const { state, dropped } = replay(this.events, this.transcript, new Set([seq]));
+    // Only changes that fail *because of this undo* are its dependents: compare with a
+    // replay of the log as it stands (events recorded under older rules may not replay).
+    const base = replay(this.events, this.transcript, new Set());
+    const baseDropped = new Set(base.dropped.map((e) => e.seq));
+    const res = replay(this.events, this.transcript, new Set([seq]));
+    const state = res.state;
+    const dropped = res.dropped.filter((e) => !baseDropped.has(e.seq) && e.source !== "editor");
     const undoSeq = this.events.length + 1;
     const at = new Date().toISOString();
     for (const e of [target, ...dropped]) e.reverted = { at, by: undoSeq };

@@ -43,6 +43,12 @@ export interface ApplyContext {
   meetingTime: number;
   seq: number;
   now?: () => string;
+  /**
+   * Rebuilding from the event log: the agent-only guards (stale values, pinning) already
+   * ran when the event was recorded, and links to items that no longer exist are dropped
+   * instead of failing the whole event.
+   */
+  replaying?: boolean;
 }
 
 export type ApplyResult =
@@ -78,13 +84,23 @@ export function replay(
   for (const e of events) {
     if (e.reverted || undone.has(e.seq) || e.op === "undo") continue;
     const t = parseTs(e.ts);
-    const r = applyOp(state, { name: e.op, input: e.input } as Op, {
+    // Links to items that no longer exist are dropped rather than failing the event.
+    const input = { ...(e.input as Record<string, unknown>) };
+    for (const key of ["related", "basis"] as const) {
+      if (Array.isArray(input[key])) {
+        const kept = (input[key] as string[]).filter((id) => !!state.items[id]);
+        if (key === "basis" && kept.length === 0) continue; // nothing left to justify it: the component goes
+        input[key] = kept;
+      }
+    }
+    const r = applyOp(state, { name: e.op, input } as Op, {
       source: e.source,
       // A human edit only "knows" the transcript said up to its time (for pinning).
       transcript: e.source === "human" ? transcript.filter((u) => u.t <= t) : transcript,
       meetingTime: t,
       seq: e.seq,
       now: () => e.at,
+      replaying: true,
     });
     if (r.ok) state = r.state;
     else dropped.push(e);
@@ -168,7 +184,7 @@ function checkStatus(kind: Item["kind"], status: Item["status"]) {
  * something said after the human edit (i.e. the team revisited it).
  */
 function checkPinned(item: Item, ctx: ApplyContext, ev: Evidence) {
-  if (ctx.source !== "agent" || !item.pinned || item.pinnedAfterIdx === null) return;
+  if (ctx.replaying || ctx.source !== "agent" || !item.pinned || item.pinnedAfterIdx === null) return;
   if ((ev.idx ?? -1) < item.pinnedAfterIdx) {
     fail(
       `item '${item.id}' was set by a human after the line at index ${item.pinnedAfterIdx - 1}; only change it if the discussion revisits it after that`,
@@ -206,7 +222,8 @@ export function numbersIn(text: string): Set<number> {
  * the statement must not survive in the item's title or rationale, where the doc would
  * still show them. Deterministic, so an old value can't linger whatever the model writes.
  */
-function checkRetiredValues(before: string, after: string, places: { title: string; rationale: string | null }) {
+function checkRetiredValues(before: string, after: string, places: { title: string; rationale: string | null }, ctx?: ApplyContext) {
+  if (ctx?.replaying) return;
   const now = numbersIn(after);
   const retired = [...numbersIn(before)].filter((n) => !now.has(n));
   if (!retired.length) return;
@@ -343,7 +360,7 @@ const recordItem: Handler<RecordItem> = (state, input, ctx) => {
   };
   pin(item, ctx);
   if (input.revised_from && ctx.source === "agent") {
-    checkRetiredValues(input.revised_from, item.detail, { title: item.title, rationale: item.reason });
+    checkRetiredValues(input.revised_from, item.detail, { title: item.title, rationale: item.reason }, ctx);
   }
   if (input.revised_from) {
     item.history.push({
@@ -460,7 +477,7 @@ const updateItem: Handler<UpdateItem> = (state, input, ctx) => {
   // change (it goes to the changelog), not a reason the design is right.
   const detailChange = changes.find((c) => c.field === "detail");
   if (detailChange && ctx.source === "agent") {
-    checkRetiredValues(detailChange.from ?? "", item.detail, { title: item.title, rationale: item.reason });
+    checkRetiredValues(detailChange.from ?? "", item.detail, { title: item.title, rationale: item.reason }, ctx);
   }
   item.history.push(...changes);
   item.evidence.push(ev);
@@ -490,7 +507,7 @@ const supersedeItem: Handler<SupersedeItem> = (state, input, ctx) => {
     fail(`replacement '${newItem.id}' is ${newItem.status}; it must be proposed, accepted or tentative`);
   }
   if (ctx.source === "agent") {
-    checkRetiredValues(oldItem.detail, newItem.detail, { title: newItem.title, rationale: newItem.reason });
+    checkRetiredValues(oldItem.detail, newItem.detail, { title: newItem.title, rationale: newItem.reason }, ctx);
   }
   if (!ALLOWED_STATUSES[oldItem.kind].includes("superseded")) {
     fail(`a ${oldItem.kind} cannot be superseded; resolve or drop it with update_item`);
