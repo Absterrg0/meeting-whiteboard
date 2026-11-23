@@ -179,7 +179,7 @@ export function registerLiveRoutes(app: Hono, deps: LiveRouteDeps) {
 
     let base: string | null;
     try {
-      base = provider.webhookBaseUrl ?? (await publicUrl());
+      base = provider.pollOnly ? null : (provider.webhookBaseUrl ?? (await publicUrl()));
     } catch (e) {
       // A provider we can poll still works without a public URL (pull only, a little slower).
       if (!provider.pollTranscript) return c.json({ error: (e as Error).message }, 400);

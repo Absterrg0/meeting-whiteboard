@@ -80,6 +80,8 @@ export interface BotProvider {
   webhookPath: string;
   /** Base URL the provider posts webhooks to, when it differs from the public tunnel URL. */
   webhookBaseUrl?: string | null;
+  /** No webhooks at all: the transcript is only polled (no public URL or tunnel needed). */
+  pollOnly?: boolean;
   /** Shown in /api/live/config. */
   info: Record<string, unknown>;
   createBot(opts: { meetingUrl: string; botName: string; webhookUrl: string }): Promise<{ id: string; status: BotStatus }>;
@@ -153,7 +155,8 @@ export function attendeeProvider(env: NodeJS.ProcessEnv, fetchImpl: typeof fetch
       "Set ATTENDEE_API_KEY (and ATTENDEE_BASE_URL if Attendee is not on http://localhost:8000) in .env and restart the server. See docs/live-sources.md.",
     webhookPath: ATTENDEE_WEBHOOK_PATH,
     webhookBaseUrl: cfg.webhookBaseUrl,
-    info: { baseUrl: cfg.baseUrl, transcription: cfg.transcription, signature: !!cfg.webhookSecret },
+    pollOnly: !cfg.webhooks,
+    info: { baseUrl: cfg.baseUrl, transcription: cfg.transcription, signature: !!cfg.webhookSecret, webhooks: cfg.webhooks },
     async createBot(opts) {
       const bot = await wrap(client.createBot(opts));
       return { id: bot.id, status: attendeeBotStatus(bot) };
@@ -204,5 +207,5 @@ export function selectedProviderId(env: NodeJS.ProcessEnv = process.env): BotPro
 /** True when the selected provider needs our public (tunnel) URL to deliver webhooks. */
 export function botNeedsTunnel(env: NodeJS.ProcessEnv = process.env): boolean {
   const p = botProviders(env)[selectedProviderId(env)];
-  return p.configured && !p.webhookBaseUrl;
+  return p.configured && !p.webhookBaseUrl && !p.pollOnly;
 }

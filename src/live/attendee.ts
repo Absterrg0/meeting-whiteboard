@@ -41,6 +41,11 @@ export interface AttendeeConfig {
   transcription: AttendeeTranscription;
   /** Overrides the base URL Attendee posts webhooks to (e.g. http://host.docker.internal:8787). */
   webhookBaseUrl: string | null;
+  /**
+   * Webhooks are only a speed-up: the app polls Attendee's transcript either way. Off by default
+   * when Attendee runs on this machine (no tunnel needed); ATTENDEE_WEBHOOKS=on|off overrides.
+   */
+  webhooks: boolean;
   language: string | null;
 }
 
@@ -57,6 +62,10 @@ export function attendeeConfig(env: NodeJS.ProcessEnv = process.env): AttendeeCo
     webhookSecret: env.ATTENDEE_WEBHOOK_SECRET?.trim() || null,
     transcription: t === "deepgram" || t === "openai" ? t : "captions",
     webhookBaseUrl: env.ATTENDEE_WEBHOOK_BASE_URL?.trim().replace(/\/+$/, "") || null,
+    webhooks:
+      env.ATTENDEE_WEBHOOKS?.trim().toLowerCase() === "on" ||
+      (env.ATTENDEE_WEBHOOKS?.trim().toLowerCase() !== "off" &&
+        (!!env.ATTENDEE_WEBHOOK_BASE_URL?.trim() || !urls.every((u) => /^https?:\/\/(localhost|127\.0\.0\.1|\[::1\])(:|\/|$)/i.test(u)))),
     language: env.ATTENDEE_LANGUAGE?.trim() || null,
   };
 }

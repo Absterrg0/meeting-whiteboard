@@ -135,7 +135,10 @@ describe("bot provider selection", () => {
     expect(selectedProviderId({ BOT_PROVIDER: "attendee", RECALL_API_KEY: "r" })).toBe("attendee");
     expect(BOT_WEBHOOK_PATHS).toEqual([WEBHOOK_PATH, ATTENDEE_WEBHOOK_PATH]);
     expect(attendeeConfig({})).toMatchObject({ baseUrl: "http://localhost:8000", transcription: "captions", apiKey: null });
-    expect(botNeedsTunnel({ ATTENDEE_API_KEY: "a" })).toBe(true);
+    // Attendee on this machine is polled, so no tunnel; a remote one uses webhooks too.
+    expect(botNeedsTunnel({ ATTENDEE_API_KEY: "a" })).toBe(false);
+    expect(botNeedsTunnel({ ATTENDEE_API_KEY: "a", ATTENDEE_BASE_URL: "https://attendee.example.com" })).toBe(true);
+    expect(botNeedsTunnel({ ATTENDEE_API_KEY: "a", ATTENDEE_BASE_URL: "https://attendee.example.com", ATTENDEE_WEBHOOKS: "off" })).toBe(false);
     expect(botNeedsTunnel({ ATTENDEE_API_KEY: "a", ATTENDEE_WEBHOOK_BASE_URL: "http://host.docker.internal:8787" })).toBe(false);
     expect(botNeedsTunnel({})).toBe(false);
   });
