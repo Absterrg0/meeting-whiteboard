@@ -192,3 +192,24 @@ describe("runHeadless (simulated live meeting)", () => {
     expect(session.events.map((e) => e.seq)).toEqual([1, 2]);
   });
 });
+
+describe("consolidation", () => {
+  it("runs a consolidation pass every few minutes of meeting time, beside the normal turns", async () => {
+    const modes: string[] = [];
+    const fake = new FakeAgent((input) => {
+      modes.push(input.mode ?? "batch");
+      return {};
+    });
+    const origStep = fake.step.bind(fake);
+    fake.step = async (input: StepInput) => {
+      if (input.mode === "consolidate") {
+        modes.push("consolidate");
+        return { applied: 0, errors: [], note: "", usage: emptyUsage() };
+      }
+      return origStep(input);
+    };
+    // 13 lines, 60 s apart: 12 minutes of meeting, so two consolidations (at ~5 and ~10 min).
+    await runHeadless(meeting(13, 60), { agent: asAgent(fake), reviewOnFinish: false });
+    expect(modes.filter((m) => m === "consolidate")).toHaveLength(2);
+  });
+});

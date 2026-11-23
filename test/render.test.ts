@@ -149,3 +149,34 @@ describe("toMermaid / architecture visibility", () => {
     expect(toMarkdown(empty.state)).not.toMatch(/## Architecture/);
   });
 });
+
+describe("toMarkdown by topic", () => {
+  function meeting() {
+    return new Harness()
+      .apply("upsert_topic", { id: "top-session-store", title: "Session store", question: "Where do sessions live?", ts: "00:00:30", quote: "What if we used Redis" })
+      .apply("record_item", decision("dec-redis", "accepted", "00:01:30", "we're going with Redis", { title: "Session store: Redis", topic: "top-session-store" }))
+      .apply("record_item", decision("dec-memcached", "proposed", "00:00:30", "What if we used Redis", { title: "Session store: Memcached", topic: "top-session-store" }))
+      .apply("update_item", { id: "dec-memcached", status: "rejected", reason: "No persistence", ts: "00:01:00", quote: "Redis works for me" })
+      .apply("record_item", decision("dec-postgres", "proposed", "00:05:00", "keep sessions in Postgres instead", { title: "Session store: Postgres", topic: "top-session-store" }))
+      .apply("supersede_item", { old_id: "dec-redis", new_id: "dec-postgres", reason: "One less system", ts: "00:05:30", quote: "Agreed, Postgres for sessions" })
+      .apply("upsert_topic", { id: "top-region", title: "First region", question: "Which region do we deploy to first?", ts: "00:06:40", quote: "Which region do we deploy to first" })
+      .apply("record_item", { id: "q-region", kind: "open_question", title: "First region", detail: "Which region first.", status: "open", topic: "top-region", ts: "00:06:40", quote: "Which region do we deploy to first" })
+      .apply("record_item", { id: "act-plan", kind: "action_item", title: "Migration plan", detail: "Write the migration plan.", status: "open", owner: "Cara", due: "Friday", topic: "top-session-store", ts: "00:08:20", quote: "migration plan by Friday" });
+  }
+
+  it("shows each topic's current answer first, with history as labelled lines", () => {
+    const md = toMarkdown(meeting().state);
+    expect(md).toMatch(/### Session store · decided\n\n\*\*Session store: Postgres\.\*\*/);
+    expect(md).toMatch(/- Replaced: ~~Session store: Redis~~ by "Session store: Postgres" at 00:05:30: One less system\./);
+    expect(md).toMatch(/- Considered: ~~Session store: Memcached~~, rejected at 00:01:00: No persistence\./);
+    expect(md).toMatch(/- Action: \*\*Cara\*\*: Write the migration plan\. \(due Friday\)/);
+    expect(md).toMatch(/### First region · open\n\n_Which region do we deploy to first\?_/);
+    expect(md).toMatch(/## Open questions\n\n- \*\*First region\*\* \(First region\)/);
+  });
+
+  it("keeps replaced and rejected options out of the current sections", () => {
+    const current = currentSections(toMarkdown(meeting().state));
+    expect(current).toMatch(/Session store: Postgres/);
+    expect(current).not.toMatch(/Redis|Memcached/);
+  });
+});

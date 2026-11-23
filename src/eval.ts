@@ -9,7 +9,7 @@
  */
 import "dotenv/config";
 import { generateText, Output } from "ai";
-import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { basename, join } from "node:path";
 import { z } from "zod";
 import { configFromEnv, MeetingAgent, type AgentConfig } from "./agent/index.js";
@@ -438,7 +438,22 @@ async function main() {
       ),
     ),
   );
-  const reports = await pool(tasks, concurrency);
+  // Each finished run is printed and saved straight away, so a long benchmark that is
+  // interrupted still leaves its completed results behind.
+  mkdirSync("out", { recursive: true });
+  const partialFile = join("out", `eval-${stamp}.partial.jsonl`);
+  const reports = await pool(
+    tasks.map((t) => async () => {
+      const r = await t();
+      const failed = r.results.filter((c) => !c.pass).map((c) => c.id);
+      console.log(
+        `[done] ${r.name} run ${r.run}: ${r.passed}/${r.total}, $${r.agentCostUsd.toFixed(3)}, p50 ${fmt(r.latencyP50)}s${failed.length ? `, failed: ${failed.join(", ")}` : ""}${r.error ? `, ERROR ${r.error.split("\n")[0]}` : ""}`,
+      );
+      appendFileSync(partialFile, JSON.stringify(r) + "\n");
+      return r;
+    }),
+    concurrency,
+  );
 
   let passed = 0;
   let total = 0;
