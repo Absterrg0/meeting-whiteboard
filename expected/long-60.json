@@ -111,9 +111,9 @@
     {
       "id": "24-doc",
       "type": "doc_includes",
-      "desc": "24 partitions current",
+      "desc": "Partition count revised to 24 (recorded in the history; Kafka itself is later removed)",
       "pattern": "\\b24 partitions?\\b",
-      "sections": "current"
+      "sections": "all"
     },
     {
       "id": "12-doc",
