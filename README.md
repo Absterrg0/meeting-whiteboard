@@ -147,7 +147,8 @@ Each configuration was run on all 9 meetings (21 to 34 checks each, 231 in total
 | v3: topics, consolidation, all roles on Sonnet 5.5 | 442/462 (95.7%) | 96% | ~3.3 s | $0.98 |
 | **v3 optimized (default)**: Sonnet 5.5 scribe, Haiku 5.5 editor, review at low effort, consolidation only after changes, one-call topic creation and reversals | **222/231 (96.1%)** | (1 run) | **~3.1 s** | **$0.51** |
 | v3 on GPT-6.1 Sol (OpenAI) | 430/462 (93.1%) | 94% | ~5.0 s | $0.59 |
-| Default + Jev decision layer (`TYPESAFE_AI_API_KEY` set) | 221/231 (95.7%) | (1 run) | ~3.3 s; accept/reject flips ~0.9 s | $0.51 |
+| Default + Jev decision layer (`TYPESAFE_AI_API_KEY` set), first run | 221/231 (95.7%) | (1 run) | ~3.3 s; accept/reject flips ~0.9 s | $0.51 |
+| **Final submitted version**: + topic filing from titles, a second live answer kept as a proposal, decline/deferral rules, Jev on | **225/231 (97.4%)**, 7 of 9 meetings at 100% | (1 run) | **~3.3 s; flips ~0.9 s** | **$0.48** |
 | Budget option: Haiku 5.5 scribe, Sonnet 5.5 review (`MODEL=anthropic/claude-haiku-5-5 REVIEW_MODEL=anthropic/claude-sonnet-5-5`) | 219/231 (94.8%) | (1 run) | ~2.9 s | $0.15 |
 \* v2's simulation did not count the 0.6 s debounce.
 
@@ -155,7 +156,7 @@ What v3 adds over v2 is not visible in these totals, which were already high. It
 
 **Blind test.** GPT-6 also wrote one more meeting (a video transcoding pipeline, plain `Name: text` lines without timestamps) plus an answer key, from the README only (`final-test/`). The system's doc matched every accepted decision, final value, open question, tentative item and action item in the key. That includes a declined action picked up by someone else, a lease revised from 10 to 2 minutes, and an "initial attempt plus two retries" policy. All five rejected options were recorded with their reasons, and nothing from the key's "must not appear" list appeared.
 
-The checks that still fail are mostly subtle. An action item someone declined isn't always recorded as declined. In one 120-minute run, a component the team dropped late stayed in the diagram. On the interleaved meeting, a security topic deferred "to another meeting" is sometimes recorded as decided.
+The weakest meeting is still the one with interleaved topics (22/27 in the final run), where pronouns ("that one", "the second option") and topics that resume much later stress the turn-by-turn judgement. The checks that still fail are mostly subtle. An action item someone declined isn't always recorded as declined. In one 120-minute run, a component the team dropped late stayed in the diagram. On the interleaved meeting, a security topic deferred "to another meeting" is sometimes recorded as decided.
 
 ## Design choices and trade-offs
 
