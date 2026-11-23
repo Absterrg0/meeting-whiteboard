@@ -79,6 +79,7 @@ The work is split by how fast and how globally each part has to think.
 - It runs when architecture-relevant items change: debounced by 5 s, at most 20 s behind, and once at the end.
 - It is **declarative**. Given all the items and the current diagram, the model returns the *complete* intended diagram and summary. Code diffs that against the current diagram and applies only the difference.
 - Same decisions in, same diagram out: the diagram can't accumulate stale edits, and applying the plan twice changes nothing.
+- Stability rules in code: a component the editor re-ids under the same name keeps its id, so its edges and place in the layout don't churn; and a component whose decision is still live is never dropped just because one editor run forgot it. Components leave the diagram when a decision changes.
 - The summary is screened in code. Sentences that mention options that were turned down or replaced are dropped.
 
 **The fast decision layer** (`src/agent/decider.ts`, optional: `DECISION_MODEL=typesafe-ai/jev-latest`) is a "System 1" in front of the scribe. Before each scribe turn, one decision-model call (TypeSafe AI's Jev through the AI SDK's `experimental_decide`, about 0.3–0.5 s, cents per meeting) answers typed questions about the new lines:
