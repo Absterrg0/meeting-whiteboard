@@ -116,9 +116,13 @@ These are in `src/agent/prompt.ts`, as a status rubric applied the same way ever
 - A revised value updates the existing item. A relative change ("double it") is resolved to the number.
 - A reason is only recorded if someone gave one; "the team agreed" is not a reason.
 
-### Human corrections
+### Human corrections and undo
 
 In the document, hover any item to confirm, edit, reject or replace it; items the agent was unsure about carry a "to confirm" marker. An edit goes through the same reducer as an event with `source: human`, pins the item, and is passed to the scribe as a notice on its next turn. The agent can still change a pinned item, but only with a quote from a line said after the edit. So a correction survives the agent re-reading the same discussion, while a real revisit later in the meeting is still picked up.
+
+**Undo** works on any change, the agent's or a human's, from the Activity feed. The state is a fold over the event log, so undo is exact: the state is rebuilt from the log without that event. Later changes that relied on it no longer pass the reducer and are undone with it, and the response lists them. The undo is itself an event in the changelog, and the scribe is told about it so it doesn't just record the same thing again. The editor then brings the diagram and summary back in line.
+
+**Stale values across items.** The reducer refuses a revision that leaves the old number in the item itself. Separately, after every revision the session scans all other live items for the number that was replaced (e.g. a fact saying "exceeds the 100/min limit" after the limit became 300) and tells the scribe on its next pass to reword them.
 
 ## Results
 
@@ -141,20 +145,25 @@ RESULTS_TABLE
 | Append-only, cached scribe conversation | Latency and cost stay flat; the model sees its own earlier calls. | Restarts from a snapshot on long meetings. |
 | Deterministic guards (grounding, stale values, status rules) | Failure modes that matter can't depend on the model behaving. | A rejected call costs a correction round. |
 | Rendered doc, not model prose | Old values can't survive a revision; structure is stable. | Prose is plainer; the editor's summary covers the narrative. |
-| Sonnet 5.5, medium effort by default | Keeps up in real time; see results for cost. | `gpt-6-luna` is far cheaper; Opus is slower. |
+| Sonnet 5.5 (medium) for the scribe, Haiku 5.5 (low) for the editor and review passes | The scribe's judgement is what matters; diagram reconciliation is structured and checked by code, so a small model is enough. Measured per role: the editor fell from the largest cost line to about $0.04 per meeting. | GPT-6.1 Sol was cheaper but scored lower and lagged more (see Results). |
+| Concurrent consolidation, only after changes | Catches drift during long meetings without adding lag; idle stretches cost nothing. | A fix can arrive up to 10 minutes later than a perfect scribe would have made it. |
+| Lag is the model, not the pipeline | Measured per turn: 0.6 s debounce, about 1.6 s to first token, about 1.5 s to write the change. There is no queueing and a correction round is rare (1 turn in 40). | Going lower means fewer output tokens or a faster model, which trades quality. |
 
 ## Assumptions
 
 - One meeting per session; the doc starts empty.
 - Agreement is judged from what people say, not from roles.
 - With live audio, speakers are set with the "Speaking now" chips, because realtime transcription has no diarization. The meeting bot gets real names from the platform.
+- **Meeting bot: buy before build.** Two providers sit behind one interface (`BOT_PROVIDER`). **Recall.ai** is hosted (about $0.65/hour), with zero ops and every platform. **Attendee** is self-hosted with Docker, gets transcripts free from meeting captions, and has real speaker names. Its licence is the Elastic License 2.0, not OSI open source: fine to self-host for our own use, not to resell. Vexa is Apache-2.0 but has no real-time push yet. Writing our own browser bot (Google sign-in, admission, caption scraping, Zoom's SDK review) is days of brittle work, so it wasn't the right use of the time. Neither provider has been tested against a real call; both are tested against simulators that follow their documented and source-verified payloads.
+- **Local, single user.** The server binds to 127.0.0.1 and has no auth. Sessions persist to `out/<id>/` (state, event log, transcript) and can be reopened from the start screen.
 
 ## What I would do next
 
-- **Confidence and a review queue**: let the scribe mark low-confidence changes for a person to confirm.
+- **Speaker detection for raw audio**: chunked diarization with `gpt-4o-transcribe-diarize`, with short reference clips per participant so the labels stay consistent across chunks.
+- **A review queue**: low-confidence changes are already flagged "to confirm"; next is to hold them out of the doc until confirmed when a team wants that.
 - **Diagram stability**: give the editor a canonical component inventory carried between meetings, and vote over two editor samples on borderline edges.
 - **Multi-meeting docs**: load a previous meeting's state as the baseline the next meeting revises.
-- **Production**: persistent sessions (Postgres for the event log), auth, per-team docs, export to Notion/Confluence/GitHub (a PR when a decision changes), cost caps per meeting, tracing.
+- **Production**: the event log in Postgres (the state is already a fold over it), auth, per-team docs, export to Notion/Confluence/GitHub (a PR when a decision changes), per-meeting cost caps, tracing, and a hosted bot fleet.
 
 ## Repository layout
 
@@ -163,7 +172,7 @@ src/core/       types, operations (zod), reducer + guards, grounding, renderers 
 src/agent/      scribe, editor, prompts, provider layer (Vercel AI SDK: Anthropic, OpenAI)
 src/session.ts  scheduling, meeting clock, replay, simulated-live headless runs, human edits, outputs
 src/ingest/     transcript format detection and parsing
-src/live/       browser audio relay to OpenAI realtime transcription, Recall.ai bot, tunnel
+src/live/       browser audio relay to OpenAI realtime transcription, meeting bots (Recall.ai / Attendee), tunnel
 src/server.ts   HTTP API; SSE stream (full snapshot on connect, then small deltas: src/wire.ts)
 src/cli.ts      headless replay        src/eval.ts   multi-run eval with stability metrics
 web/            React UI               transcripts/, expected/   meetings and expected outcomes
