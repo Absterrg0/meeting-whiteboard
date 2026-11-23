@@ -63,6 +63,8 @@ export interface SessionOptions {
   batch?: Partial<BatchPolicy>;
   outDir?: string;
   title?: string;
+  /** Run the end-of-meeting consistency review when the meeting finishes (default true). */
+  reviewOnFinish?: boolean;
 }
 
 export class MeetingSession extends EventEmitter {
@@ -84,6 +86,9 @@ export class MeetingSession extends EventEmitter {
   private drainWaiters: (() => void)[] = [];
   private idleWaiters: (() => void)[] = [];
   private failures = 0;
+  private finishing = false;
+  private finished: Promise<void> = Promise.resolve();
+  reviewOnFinish = true;
 
   // Meeting clock: meetingTime = clockBase + (now - clockStart) * speed, while running.
   private clockBase = 0;
@@ -100,6 +105,7 @@ export class MeetingSession extends EventEmitter {
     this.agent = opts.agent ?? new ScribeAgent();
     this.policy = { ...DEFAULT_BATCH, ...opts.batch };
     this.outDir = opts.outDir ? join(opts.outDir, this.id) : null;
+    this.reviewOnFinish = opts.reviewOnFinish ?? true;
     if (this.outDir) mkdirSync(this.outDir, { recursive: true });
   }
 
@@ -155,7 +161,7 @@ export class MeetingSession extends EventEmitter {
         setTimeout(() => {
           this.replayQueue = this.replayQueue.filter((x) => x !== u);
           this.addUtterance({ speaker: u.speaker, text: u.text, t: u.t });
-          if (this.replayQueue.length === 0) this.finish();
+          if (this.replayQueue.length === 0) void this.finish();
         }, delayMs),
       );
     }
@@ -183,18 +189,25 @@ export class MeetingSession extends EventEmitter {
     if (wasRunning) this.resume();
   }
 
-  /** End of meeting: flush everything that is left. */
-  finish() {
+  /** End of meeting: flush everything that is left, then run the review pass. */
+  finish(): Promise<void> {
+    if (this.finishing) return this.finished;
+    this.finishing = true;
+    let resolveFinished!: () => void;
+    this.finished = new Promise((r) => (resolveFinished = r));
     this.forceFlush = true;
     this.schedule();
-    void this.drained().then(() => {
+    void this.drained().then(async () => {
+      if (this.reviewOnFinish && this.transcript.length > 0) await this.runReview();
       this.clockBase = this.meetingTime();
       this.status = "done";
       this.stopTimers();
       if (this.ticker) clearInterval(this.ticker);
       this.ticker = null;
       this.changed();
+      resolveFinished();
     });
+    return this.finished;
   }
 
   private stopTimers() {
@@ -298,6 +311,32 @@ export class MeetingSession extends EventEmitter {
     }
   }
 
+  private async runReview() {
+    this.agentBusy = true;
+    this.changed();
+    try {
+      const result = await this.agent.step({
+        state: this.state,
+        transcript: this.transcript,
+        fresh: [],
+        nextSeq: this.events.length + 1,
+        meetingTime: this.transcript.at(-1)!.t,
+        mode: "review",
+      });
+      this.state = result.state;
+      this.events.push(...result.events);
+      this.usage = mergeUsage(this.usage, result.usage);
+      this.addLog("batch", `End-of-meeting review: ${result.events.length} change(s). ${result.note}`.trim());
+      for (const e of result.errors) this.addLog("error", e);
+      this.persist(result.events);
+    } catch (err) {
+      this.addLog("error", `review failed: ${(err as Error).message}`);
+    } finally {
+      this.agentBusy = false;
+      this.changed();
+    }
+  }
+
   // ---------- human edits ----------
 
   /** Apply an operation from the UI. Human edits pin the item against agent overwrites. */
@@ -375,7 +414,6 @@ export async function runHeadless(
     await s.idle();
     opts.onBatch?.(s);
   }
-  s.finish();
-  await s.drained();
+  await s.finish();
   return s;
 }

@@ -64,7 +64,7 @@ const TOOL_DESCRIPTIONS: Record<OpName, string> = {
 function toolDefs(): Anthropic.Beta.BetaTool[] {
   const names = Object.keys(OPS) as OpName[];
   return names.map((name, i) => {
-    const schema = z.toJSONSchema(OPS[name]) as Record<string, unknown>;
+    const schema = z.toJSONSchema(OPS[name], { io: "input" }) as Record<string, unknown>;
     delete schema.$schema;
     const tool: Anthropic.Beta.BetaTool = {
       name,
@@ -104,11 +104,13 @@ export function describeState(state: DocState): string {
       .join(", ");
     out.push(`- ${i.id} | ${i.kind} | ${i.status} | ${i.title} — ${i.detail} (${extra})`);
   }
-  out.push("", "COMPONENTS (id | type | name | basis | shown as):");
+  out.push("", "COMPONENTS (id | type | name | basis | shown as | description):");
   if (state.order.components.length === 0) out.push("(none yet)");
   for (const id of state.order.components) {
     const c = state.components[id]!;
-    out.push(`- ${c.id} | ${c.type} | ${c.name} | basis=[${c.basis.join(", ")}] | ${componentVisibility(state, c)}`);
+    out.push(
+      `- ${c.id} | ${c.type} | ${c.name} | basis=[${c.basis.join(", ")}] | ${componentVisibility(state, c)} | ${c.description}`,
+    );
   }
   out.push("", "EDGES (from -> to | label | shown as):");
   if (state.order.edges.length === 0) out.push("(none yet)");
@@ -127,6 +129,8 @@ export interface StepInput {
   fresh: Utterance[];
   nextSeq: number;
   meetingTime: number;
+  /** "batch": process new lines. "review": end-of-meeting consistency pass over the whole state. */
+  mode?: "batch" | "review";
 }
 
 export interface StepResult {
@@ -135,6 +139,32 @@ export interface StepResult {
   errors: string[];
   note: string;
   usage: Usage;
+}
+
+/**
+ * End-of-meeting review: one pass over the full transcript and state to catch what
+ * incremental processing can miss (a sketch the team adopted without saying so,
+ * stale component descriptions, proposals that were overtaken, duplicates).
+ * It uses the same operations and grounding checks as normal batches.
+ */
+function reviewPrompt(state: DocState, transcript: Utterance[]): string {
+  return [
+    "<doc_state>",
+    describeState(state),
+    "</doc_state>",
+    "",
+    "<full_transcript>",
+    transcript.map(line).join("\n"),
+    "</full_transcript>",
+    "",
+    "The meeting has ended. Review the doc state against the full transcript and fix only real problems:",
+    "- proposals the team clearly adopted and built on (they went on to choose its parts or detail it) but that are still 'proposed': accept them, quoting where the team built on them;",
+    "- proposals that were overtaken by a later decision but are still 'proposed': reject them with the reason;",
+    "- details, titles or component descriptions that still describe an earlier version of a decision: rewrite them to the final version;",
+    "- components or edges that no longer match the final design, or a component in the final design that is missing an edge it obviously needs from the discussion;",
+    "- duplicate items that say the same thing.",
+    "Do not add anything that was not discussed. Do not change items marked HUMAN-EDITED. If everything is consistent, make no calls.",
+  ].join("\n");
 }
 
 export class ScribeAgent {
@@ -156,7 +186,7 @@ export class ScribeAgent {
     const firstFresh = input.fresh[0]?.idx ?? input.transcript.length;
     const context = input.transcript.filter((u) => u.idx < firstFresh).slice(-this.config.contextLines);
 
-    const userText = [
+    const userText = input.mode === "review" ? reviewPrompt(state, input.transcript) : [
       "<doc_state>",
       describeState(state),
       "</doc_state>",

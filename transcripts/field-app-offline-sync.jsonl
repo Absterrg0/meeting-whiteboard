@@ -1,0 +1,60 @@
+{"time": "00:00:04", "speaker": "Rohan", "text": "Is the coffee machine on four still broken or is it just me?"}
+{"time": "00:00:12", "speaker": "Keiko", "text": "Still broken. Facilities said Thursday, maybe. I've been going down to the lobby place."}
+{"time": "00:00:35", "speaker": "Aisha", "text": "You're a hero. OK, let's start. This is the offline mode review for the field technician app. Right now if a tech loses signal in a basement the app basically freezes, and support gets tickets every single day about checklists that vanished."}
+{"time": "00:01:10", "speaker": "Rohan", "text": "Yeah. From the product side the bar is: a technician can work a whole shift with zero connectivity, so call it eight hours. They see their assigned jobs, fill in checklists, take photos, capture the customer's signature. And nothing they complete ever gets lost. That last one is the hard requirement."}
+{"time": "00:01:42", "speaker": "Aisha", "text": "And just so we're clear on scope, two techs editing the same job at the same time, live, Google Docs style, we are not building that."}
+{"time": "00:01:50", "speaker": "Rohan", "text": "Right, no live co-editing. A job is assigned to one tech, occasionally it gets reassigned, that's it."}
+{"time": "00:02:15", "speaker": "Keiko", "text": "Some sizing so we're not guessing. About four thousand active technicians, roughly twelve jobs each per day. Photos are the heavy part, it's around twenty photos a job at maybe three megs each."}
+{"time": "00:02:45", "speaker": "Daniel", "text": "On the device I'd just keep everything in SQLite. We already use it for the parts catalog cache, so the plumbing is there. Keiko, any objection?"}
+{"time": "00:03:03", "speaker": "Keiko", "text": "Yeah, SQLite on the device is fine by me."}
+{"time": "00:03:30", "speaker": "Daniel", "text": "The bigger question is conflicts. I've been reading about CRDTs, and Automerge has a React Native binding now. If every job is a CRDT document we basically never have to think about merge logic again."}
+{"time": "00:04:05", "speaker": "Keiko", "text": "I mean, it's elegant. But what's actually concurrent here? A dispatcher moves the appointment window, the tech fills in the checklist. Those are different fields. Nobody is typing into the same notes field at the same time."}
+{"time": "00:04:52", "speaker": "Aisha", "text": "And the document history just grows, right? A phone that's been offline all day with twenty photos queued, I don't love it also carrying an ever-growing change log per job."}
+{"time": "00:05:20", "speaker": "Keiko", "text": "Plus nobody on the backend team has run Automerge in production. We'd spend the quarter debugging the merge library instead of shipping."}
+{"time": "00:05:40", "speaker": "Aisha", "text": "OK, I think CRDTs are out for this one. Too heavy for what is basically single-writer data, and nobody here has operated it. Keiko, what's the simpler version?"}
+{"time": "00:06:00", "speaker": "Keiko", "text": "Field-level last-writer-wins. Every field carries a version number that the server assigns. The client sends the version it last saw, and if the server has a newer one for that field, the server's value wins and we send it back down."}
+{"time": "00:06:35", "speaker": "Daniel", "text": "Field-level, not row-level, so the dispatcher changing the time window doesn't stomp on the tech's checklist answers. OK, I can live with that."}
+{"time": "00:06:50", "speaker": "Aisha", "text": "Good. So that's the conflict model: field-level last-writer-wins with server-assigned versions, for all work order fields."}
+{"time": "00:07:20", "speaker": "Rohan", "text": "Small one. How long do completed jobs stay on the phone? Techs sometimes need to look up what they did last week."}
+{"time": "00:07:35", "speaker": "Daniel", "text": "I was going to say seven days and then we purge them."}
+{"time": "00:07:42", "speaker": "Rohan", "text": "Seven days works for me."}
+{"time": "00:08:10", "speaker": "Keiko", "text": "Transport. My proposal is a small sync gateway, a WebSocket service. The app keeps a socket open while it's online, pushes its change batches up, and we push dispatcher changes down in real time."}
+{"time": "00:08:45", "speaker": "Aisha", "text": "Real-time push down to the device would be really nice for reassignments. Daniel?"}
+{"time": "00:08:55", "speaker": "Daniel", "text": "There's a decent socket library for React Native. Sure, should be fine."}
+{"time": "00:09:05", "speaker": "Aisha", "text": "OK, let's do the sync gateway then. It sits in front of the work order service."}
+{"time": "00:09:40", "speaker": "Daniel", "text": "And for photos, the simplest thing is to send them inside the same change batch, as multipart, so a job and its photos always arrive together."}
+{"time": "00:10:05", "speaker": "Keiko", "text": "Arriving together is nice for the back office, they hate seeing a completed job with no photos. Fine by me."}
+{"time": "00:10:15", "speaker": "Aisha", "text": "Agreed, photos ride along in the change batch."}
+{"time": "00:10:50", "speaker": "Rohan", "text": "Random idea: what if techs pre-download tomorrow's jobs over the depot Wi-Fi overnight, so they start the day fully loaded?"}
+{"time": "00:11:20", "speaker": "Keiko", "text": "Oh, sorry, going back to conflicts. There's one field that breaks last-writer-wins, which is status. If dispatch cancels a job while the tech is offline, and the tech then completes it, last-writer-wins just flips it to completed, or back to cancelled, depending on who synced last. Either way somebody's work silently disappears."}
+{"time": "00:11:55", "speaker": "Aisha", "text": "Yeah, that's not really a last-writer-wins thing, that's a business rule. OK, let's narrow it. Last-writer-wins covers the fields the tech edits: notes, checklist answers, parts used, the signature. Status is taken out of that, and how we resolve a cancelled-versus-completed conflict is an open question."}
+{"time": "00:12:30", "speaker": "Rohan", "text": "I'd want the ops managers in on that one. Sometimes they still bill the visit even if it was cancelled."}
+{"time": "00:13:20", "speaker": "Daniel", "text": "Coming back to the socket for a sec. Let me dig into how iOS treats background sockets, I have a bad feeling about it."}
+{"time": "00:13:50", "speaker": "Keiko", "text": "While you do that, batch sizing. I'd cap a sync request at two hundred changes. Honestly it's a guess, it just keeps the non-photo part of a request small."}
+{"time": "00:14:20", "speaker": "Aisha", "text": "Then two hundred for the pilot, and we look at it again once we have real traffic."}
+{"time": "00:15:00", "speaker": "Rohan", "text": "Can I ask about encryption? If a phone gets stolen, that local database has customer addresses and gate codes in it."}
+{"time": "00:15:20", "speaker": "Daniel", "text": "We could use SQLCipher. It's basically a drop-in for SQLite, but there's a real cost. On the older Android devices our techs carry, opening the database gets noticeably slower, and the key has to live in the keystore."}
+{"time": "00:15:50", "speaker": "Keiko", "text": "Or we rely on device encryption plus MDM. The phones are all company-managed, they're encrypted at rest anyway."}
+{"time": "00:16:25", "speaker": "Daniel", "text": "I really don't want to take a thirty percent hit on app startup for something MDM already covers."}
+{"time": "00:16:32", "speaker": "Keiko", "text": "Gate codes in plaintext on a lost phone isn't a great look either, though."}
+{"time": "00:16:40", "speaker": "Aisha", "text": "I don't think we can settle this in this room. Rohan, can you take it to the security team and come back with their position?"}
+{"time": "00:16:50", "speaker": "Rohan", "text": "Yeah, I'll set that up."}
+{"time": "00:17:40", "speaker": "Daniel", "text": "OK, so I looked at the background socket thing while you were talking about encryption. It's as bad as I thought. iOS kills the socket a few seconds after the app goes to the background, and Android's battery optimisation does much the same. So the socket is only alive while the tech is actually looking at the app."}
+{"time": "00:18:15", "speaker": "Keiko", "text": "Which means the gateway buys us almost nothing. We'd need a fallback for the background case anyway."}
+{"time": "00:18:30", "speaker": "Daniel", "text": "What I'd do instead: plain HTTPS delta sync on the existing work order API. The app pulls changes since its last cursor, and when dispatch changes something we send a silent push through APNs and FCM to wake the app up and trigger a pull."}
+{"time": "00:19:00", "speaker": "Keiko", "text": "That's one less service for me to run, honestly. And the API already has auth and rate limiting."}
+{"time": "00:19:15", "speaker": "Aisha", "text": "OK. We drop the sync gateway. Sync becomes an HTTPS delta endpoint on the work order API, triggered by silent push."}
+{"time": "00:19:45", "speaker": "Keiko", "text": "Now that the batch goes through the normal API, I'm worried about putting photos in the batch. Twenty photos at three megs is sixty megs per job. If that upload dies at ninety percent on a flaky connection, the whole batch fails, checklist answers included."}
+{"time": "00:20:35", "speaker": "Keiko", "text": "I'd reverse that one. Photos upload separately, straight to S3 with presigned URLs, resumable, on their own background queue. The change batch only carries the photo keys."}
+{"time": "00:20:55", "speaker": "Aisha", "text": "Agreed, let's reverse it. The back office can live with a job showing photos still uploading for a while. Checklist data must never wait behind photos."}
+{"time": "00:21:30", "speaker": "Rohan", "text": "Going back to how long jobs stay on the device. I talked to two of the regional leads last week. Warranty callbacks usually happen within two weeks, and techs want to see what they did on the first visit."}
+{"time": "00:21:55", "speaker": "Daniel", "text": "So fourteen days instead? Storage-wise that's fine as long as photos get purged once they're uploaded. We'd only be keeping the job data."}
+{"time": "00:22:10", "speaker": "Aisha", "text": "Fourteen days it is. Completed jobs stay on the device for fourteen days, and photos are deleted locally once the upload is confirmed."}
+{"time": "00:22:40", "speaker": "Rohan", "text": "What about telling the tech when one of their edits lost a conflict?"}
+{"time": "00:22:55", "speaker": "Keiko", "text": "For the pilot I'd just log conflicts on the server. We don't even know how often they happen yet."}
+{"time": "00:23:05", "speaker": "Aisha", "text": "Fine for now. Server-side logging only, and after the pilot we come back to whether techs need to see something."}
+{"time": "00:23:40", "speaker": "Aisha", "text": "Let's do owners. Keiko, the sync API contract?"}
+{"time": "00:23:48", "speaker": "Keiko", "text": "I'll have the delta sync API contract written up by next Wednesday."}
+{"time": "00:24:05", "speaker": "Daniel", "text": "And I want to check what Apple's throttling does to silent pushes. I've heard they get dropped if you send too many. I'll look into it."}
+{"time": "00:24:30", "speaker": "Rohan", "text": "I'll grab time with the ops managers about the cancelled-versus-completed case too."}
+{"time": "00:25:10", "speaker": "Aisha", "text": "Great. Anything else? No? OK, thanks everyone."}

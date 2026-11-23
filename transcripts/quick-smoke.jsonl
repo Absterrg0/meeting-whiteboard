@@ -1,0 +1,12 @@
+{"time": "00:00:03", "speaker": "Nadia", "text": "Is anyone else's laptop stuck on that update? Mine's been at ninety percent since breakfast."}
+{"time": "00:00:12", "speaker": "Joon", "text": "Mine finished overnight, sorry."}
+{"time": "00:00:25", "speaker": "Nadia", "text": "Lucky. OK, quick one: rate limiting for the public API. Partners keep hammering us during their nightly syncs."}
+{"time": "00:00:50", "speaker": "Joon", "text": "I'd do a token bucket per API key, as middleware in each service, with the buckets stored in Redis."}
+{"time": "00:01:10", "speaker": "Ines", "text": "We already run Redis, so that works for me."}
+{"time": "00:01:25", "speaker": "Nadia", "text": "OK, agreed: token bucket per API key in service middleware, backed by Redis, at a hundred requests per minute per key."}
+{"time": "00:02:05", "speaker": "Joon", "text": "Hmm, a few partners already burst to about two hundred and fifty a minute during their sync, legitimately."}
+{"time": "00:02:20", "speaker": "Nadia", "text": "Then make it three hundred requests per minute per key."}
+{"time": "00:03:00", "speaker": "Ines", "text": "Wait, though. Middleware means each of our six services implements the limiter separately. The gateway already runs Envoy, and its rate limit filter can call one central rate limit service."}
+{"time": "00:03:25", "speaker": "Joon", "text": "That's cleaner. One place to change the limits."}
+{"time": "00:03:40", "speaker": "Nadia", "text": "OK, reversing the middleware decision: rate limiting happens at the Envoy gateway through a central rate limit service, still backed by Redis. Same three hundred a minute per key."}
+{"time": "00:04:10", "speaker": "Nadia", "text": "That's it, thanks both."}

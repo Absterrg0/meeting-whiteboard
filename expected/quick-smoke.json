@@ -1,0 +1,14 @@
+{
+  "checks": [
+    {"id": "dec-envoy", "type": "llm", "desc": "Gateway rate limiting is current", "expect": "An accepted decision: rate limiting happens at the Envoy gateway through a central rate limit service backed by Redis, token bucket per API key."},
+    {"id": "dec-middleware-superseded", "type": "llm", "desc": "Middleware approach superseded", "expect": "The earlier accepted per-service middleware rate limiter is superseded (by the Envoy/gateway decision) with a reason about six services each implementing it / one place to change limits. It is not current."},
+    {"id": "limit-300", "type": "llm", "desc": "Limit revised 100 -> 300", "expect": "The current limit is 300 requests per minute per key; 100 appears only in history/changelog."},
+    {"id": "no-small-talk", "type": "llm", "desc": "Small talk ignored", "expect": "Nothing about laptop updates appears."},
+    {"id": "doc-300", "type": "doc_includes", "desc": "300/min in current doc", "pattern": "\\b(300|three hundred)\\b", "sections": "current"},
+    {"id": "doc-no-100", "type": "doc_excludes", "desc": "Old 100/min not in current doc", "pattern": "\\b(100|a hundred|one hundred)\\b", "sections": "current"},
+    {"id": "diag-envoy", "type": "diagram_includes", "desc": "Diagram has Envoy gateway", "pattern": "envoy|gateway"},
+    {"id": "diag-rls", "type": "diagram_includes", "desc": "Diagram has rate limit service", "pattern": "rate[- ]limit"},
+    {"id": "diag-redis", "type": "diagram_includes", "desc": "Diagram has Redis", "pattern": "redis"},
+    {"id": "diag-no-middleware", "type": "diagram_excludes", "desc": "Diagram has no middleware limiter", "pattern": "middleware"}
+  ]
+}

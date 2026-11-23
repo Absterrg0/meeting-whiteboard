@@ -5,6 +5,25 @@
 import { z } from "zod";
 import { COMPONENT_TYPES, ITEM_KINDS, ITEM_STATUSES } from "./types.js";
 
+/**
+ * Models occasionally send an array argument as a JSON-encoded string ("[\"a\"]") or a bare
+ * string; accept both rather than burning a round-trip on it.
+ */
+function lenientArray<T extends z.ZodTypeAny>(inner: T) {
+  return z.preprocess((v) => {
+    if (typeof v !== "string") return v;
+    const t = v.trim();
+    if (t.startsWith("[")) {
+      try {
+        return JSON.parse(t);
+      } catch {
+        /* fall through to slug extraction */
+      }
+    }
+    return t.match(/[a-z0-9][a-z0-9-]{1,60}/g) ?? [];
+  }, z.array(inner));
+}
+
 const id = z
   .string()
   .regex(/^[a-z0-9][a-z0-9-]{1,60}$/, "ids are lowercase slugs like 'dec-queue-sqs'");
@@ -34,7 +53,7 @@ export const RecordItem = z.object({
   reason: z.string().nullable().optional().describe("Rationale, if one was given."),
   owner: z.string().nullable().optional().describe("For action items: who took it."),
   due: z.string().nullable().optional().describe("For action items: due date exactly as said, else null."),
-  related: z.array(id).optional().describe("Ids of related items."),
+  related: lenientArray(id).optional().describe("Ids of related items."),
   ...grounding,
 });
 export type RecordItem = z.infer<typeof RecordItem>;
@@ -46,7 +65,7 @@ export const UpdateItem = z.object({
   status: z.enum(ITEM_STATUSES).optional(),
   owner: z.string().nullable().optional(),
   due: z.string().nullable().optional(),
-  related: z.array(id).optional(),
+  related: lenientArray(id).optional(),
   reason: z.string().min(3).describe("Why it changed, in the team's terms."),
   ...grounding,
 });
@@ -65,9 +84,8 @@ export const UpsertComponent = z.object({
   name: z.string().min(2).max(60),
   type: z.enum(COMPONENT_TYPES),
   description: z.string().min(3).describe("What it does in this design, 1-2 sentences."),
-  basis: z
-    .array(id)
-    .min(1)
+  basis: lenientArray(id)
+    .refine((a) => a.length > 0, "at least one basis id")
     .describe(
       "Item ids (decisions, requirements, open questions) that put this component in the design. The component is shown only while at least one basis item is accepted/tentative; it is drawn as TBD if its basis is only open questions.",
     ),
@@ -85,7 +103,7 @@ export const UpsertEdge = z.object({
   from: id,
   to: id,
   label: z.string().max(40).describe("Short verb phrase, e.g. 'enqueue event'."),
-  basis: z.array(id).min(1),
+  basis: lenientArray(id).refine((a) => a.length > 0, "at least one basis id"),
 });
 export type UpsertEdge = z.infer<typeof UpsertEdge>;
 

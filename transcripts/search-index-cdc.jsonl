@@ -1,0 +1,60 @@
+{"time": "00:00:06", "speaker": "Sofia", "text": "Wei! You're back. How was Lisbon?"}
+{"time": "00:00:14", "speaker": "Wei", "text": "Amazing, but I'm still on Lisbon time, so if I say something dumb, that's why."}
+{"time": "00:00:41", "speaker": "Grace", "text": "OK, let's get into it, we've got half an hour. Today is about getting the product search index off the nightly batch job. Right now the Airflow job rebuilds the whole Elasticsearch index from the catalog database every night, so prices and stock in search can be up to a day stale."}
+{"time": "00:01:20", "speaker": "Hamid", "text": "And that's costing us. Last flash sale we had people adding items to the cart at the old price, and we sold stuff that was already out of stock. What I need is price and stock changes showing up in search within a minute. That's the number."}
+{"time": "00:01:50", "speaker": "Grace", "text": "And ranking stays as it is. Nobody touches relevance or personalization as part of this project."}
+{"time": "00:02:02", "speaker": "Hamid", "text": "Correct, ranking is out of scope."}
+{"time": "00:02:20", "speaker": "Olumide", "text": "Some numbers for context. We've got about forty million SKUs. The nightly rebuild takes around five hours now. And during a flash sale we've seen updates peak at roughly three thousand a second."}
+{"time": "00:03:00", "speaker": "Olumide", "text": "Honestly the quickest win would be dual writes. Whenever the catalog service writes to MySQL, it also writes the document to Elasticsearch. Done."}
+{"time": "00:03:25", "speaker": "Wei", "text": "The catalog service isn't the only writer though. I counted last quarter, fourteen different services write to the catalog tables directly. Pricing, the merchant importer, the promotions engine..."}
+{"time": "00:03:50", "speaker": "Sofia", "text": "And if the MySQL write succeeds and the Elasticsearch write times out, which one wins? You end up with an index that drifts and no way to replay what you missed."}
+{"time": "00:04:18", "speaker": "Wei", "text": "And retrying from fourteen services means fourteen different retry implementations."}
+{"time": "00:04:30", "speaker": "Grace", "text": "Yeah, I think dual writes are off the table. Too many writers, and no way to recover when the two stores disagree."}
+{"time": "00:04:55", "speaker": "Wei", "text": "The obvious alternative is change data capture. Debezium reads the MySQL binlog and publishes every row change to Kafka. It doesn't matter who wrote the row."}
+{"time": "00:05:20", "speaker": "Sofia", "text": "We already run Kafka on MSK for the order events, so that part's not new infrastructure."}
+{"time": "00:05:35", "speaker": "Grace", "text": "Good. So we're going with Debezium on the catalog MySQL into Kafka, covering products, prices and stock levels."}
+{"time": "00:06:10", "speaker": "Wei", "text": "Then something has to turn row changes into search documents. I'd use Flink for that, it's what everyone uses for streaming."}
+{"time": "00:06:30", "speaker": "Olumide", "text": "Flink's fine by me."}
+{"time": "00:06:38", "speaker": "Grace", "text": "OK, Flink for the stream processing then."}
+{"time": "00:07:05", "speaker": "Olumide", "text": "One wrinkle. A search document needs the full category path and the brand name, but the change events only carry IDs. I'd put a Redis cache in front of the category and brand lookups so we're not hammering MySQL for every event."}
+{"time": "00:07:35", "speaker": "Wei", "text": "Makes sense."}
+{"time": "00:07:40", "speaker": "Grace", "text": "OK, add the Redis cache for the lookups."}
+{"time": "00:08:10", "speaker": "Sofia", "text": "Kafka side, I'd start the catalog topics at twelve partitions, keyed by product ID so all the changes for one product stay in order."}
+{"time": "00:08:28", "speaker": "Wei", "text": "Twelve is fine to start."}
+{"time": "00:09:00", "speaker": "Hamid", "text": "Ooh, while we're streaming price changes anyway, could we feed them into the app for price-drop alerts? Like, notify people who wishlisted something?"}
+{"time": "00:09:20", "speaker": "Sofia", "text": "Wait, actually, I need to flag something about stock before we go further."}
+{"time": "00:09:30", "speaker": "Sofia", "text": "Stock isn't really owned by the catalog database. The warehouse system is the source of truth, and a sync job copies stock levels into catalog MySQL every ten minutes. So CDC on that table still gives us ten-minute-old stock."}
+{"time": "00:10:05", "speaker": "Hamid", "text": "That kills the one-minute target for stock."}
+{"time": "00:10:15", "speaker": "Grace", "text": "OK, then let's narrow it. CDC on the catalog MySQL covers products and prices. Stock has to come from somewhere closer to the warehouse system, and where exactly is an open question for now."}
+{"time": "00:10:40", "speaker": "Olumide", "text": "Let me poke at what the warehouse team already publishes. I think they have some kind of event stream for the fulfilment side."}
+{"time": "00:13:00", "speaker": "Wei", "text": "Back to sizing. Three thousand updates a second at peak, and an Elasticsearch bulk request realistically does maybe a hundred and fifty documents a second per consumer once you include enrichment."}
+{"time": "00:13:25", "speaker": "Sofia", "text": "So twelve partitions caps us at about eighteen hundred a second. We need at least twenty consumers at peak."}
+{"time": "00:13:40", "speaker": "Wei", "text": "And you can't add partitions later without reshuffling the keys, which breaks per-product ordering. I'd go straight to thirty-two."}
+{"time": "00:13:55", "speaker": "Grace", "text": "OK, thirty-two partitions instead of twelve. That gives us headroom for the next sale."}
+{"time": "00:14:30", "speaker": "Olumide", "text": "How often do we flush bulk requests to Elasticsearch?"}
+{"time": "00:14:45", "speaker": "Wei", "text": "I'd say every five seconds or a thousand documents, whichever comes first. But I haven't load tested it."}
+{"time": "00:15:00", "speaker": "Grace", "text": "Let's take five seconds or a thousand docs for now and revisit after the load test."}
+{"time": "00:15:40", "speaker": "Olumide", "text": "Something we haven't talked about: full reindexes. When we change the mapping, or something goes wrong, we need to rebuild the whole index from scratch."}
+{"time": "00:16:05", "speaker": "Wei", "text": "I'd keep the nightly Airflow job, but run it weekly as a safety net that rebuilds into a fresh index and swaps the alias."}
+{"time": "00:16:25", "speaker": "Olumide", "text": "That's two code paths building documents. They'll drift. I'd rather replay from Kafka: compacted topics, reset the consumer offsets, rebuild into a new index."}
+{"time": "00:16:50", "speaker": "Sofia", "text": "Compacted topics holding forty million products is a lot of storage on MSK, and a full replay at our throughput is hours anyway."}
+{"time": "00:17:20", "speaker": "Olumide", "text": "Until the two paths produce different documents and nobody notices for a month."}
+{"time": "00:17:35", "speaker": "Grace", "text": "We're going in circles on this one, and we don't need the answer for the first milestone. Let's leave the reindex strategy open. Wei, can you write up both options with a rough storage and runtime cost for each?"}
+{"time": "00:17:50", "speaker": "Wei", "text": "Yep, will do."}
+{"time": "00:19:40", "speaker": "Sofia", "text": "Can I go back to Flink? I've been chewing on it. Who's on call for it? Nobody on my team has ever run Flink. Checkpoints, savepoints, upgrades, the JobManager falling over at three in the morning."}
+{"time": "00:20:10", "speaker": "Wei", "text": "Fair. And looking at what we actually need, it's stateless. Each change event becomes one document update plus a couple of lookups. There are no windows, no joins between streams."}
+{"time": "00:20:30", "speaker": "Wei", "text": "A plain Kafka consumer service would do it. Call it the indexer, written in Go, scaled by running more instances up to the partition count."}
+{"time": "00:20:50", "speaker": "Olumide", "text": "I'd be happier with that. I can actually debug a Go service."}
+{"time": "00:21:05", "speaker": "Grace", "text": "OK, let's reverse the Flink decision. We use a plain indexer service consuming from Kafka. Flink is out because nobody can operate it and the job doesn't need state."}
+{"time": "00:21:50", "speaker": "Olumide", "text": "And if the indexer is a long-running service, then I don't think we need Redis either. The category tree is about twenty thousand nodes and brands are around fifty thousand rows. That fits in memory easily."}
+{"time": "00:22:15", "speaker": "Wei", "text": "Load them at startup, and keep them fresh from the category and brand changes on the same CDC stream."}
+{"time": "00:22:30", "speaker": "Sofia", "text": "Please. One less thing to page me about."}
+{"time": "00:22:40", "speaker": "Grace", "text": "OK, drop Redis. The indexer keeps the category and brand lookups in memory and refreshes them from CDC."}
+{"time": "00:24:30", "speaker": "Hamid", "text": "From my side, what do we show if the indexer falls behind? Can we at least alert on it?"}
+{"time": "00:24:45", "speaker": "Sofia", "text": "We alert on consumer lag. If the oldest unprocessed event is more than sixty seconds old, that's a page, because at that point we're missing Hamid's one-minute target."}
+{"time": "00:25:05", "speaker": "Grace", "text": "Agreed, page on consumer lag over sixty seconds."}
+{"time": "00:27:00", "speaker": "Grace", "text": "Let's wrap with owners. Wei, Debezium?"}
+{"time": "00:27:10", "speaker": "Wei", "text": "I'll have the Debezium connector running against the staging replica by December 4th."}
+{"time": "00:27:25", "speaker": "Olumide", "text": "I'll start the indexer skeleton this week, and I'll come back on the warehouse events thing."}
+{"time": "00:27:50", "speaker": "Sofia", "text": "I'll set up the topics on MSK once the partition count is final, which I guess it is now."}
+{"time": "00:28:05", "speaker": "Grace", "text": "It is. Thanks all. Wei, go sleep."}
