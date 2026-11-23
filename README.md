@@ -188,6 +188,7 @@ The weakest meeting is still the one with interleaved topics (22/27 in the final
 - **A review queue**: low-confidence changes are already flagged "to confirm"; next is to hold them out of the doc until confirmed when a team wants that.
 - **Diagram stability**: give the editor a canonical component inventory carried between meetings, and vote over two editor samples on borderline edges.
 - **Multi-meeting docs**: load a previous meeting's state as the baseline the next meeting revises.
+- **Bot infrastructure without tunnels.** In the local setup the laptop reaches a self-hosted Attendee through free Cloudflare quick tunnels, which have no uptime guarantee; the app copes by pulling transcripts, failing over between routes and retrying, but that is resilience, not a design. In production the app and the bot workers run in the same private network, the app pulls Attendee's transcript with a cursor (webhooks only as a fast path, as now), and only the web UI is public, behind a real ingress (a load balancer with TLS, or a named tunnel with replicas). The session's event log lives in Postgres, so a server restart resumes a live meeting instead of dropping it.
 - **Production**: the event log in Postgres (the state is already a fold over it), auth, per-team docs, export to Notion/Confluence/GitHub (a PR when a decision changes), per-meeting cost caps, tracing, and a hosted bot fleet.
 
 ## Repository layout
