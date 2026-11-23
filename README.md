@@ -53,6 +53,8 @@ Live sources (microphone, meeting tab, Recall.ai bot) are described in [docs/liv
 ## How it works
 
 ```
+ decision layer (Jev, ~0.4 s, before each scribe turn): skip chatter; apply clear accept/reject at once ──▶ reducer
+
  sources                          scribe (every speaker turn)                    state                     views
  ─────────                        ───────────────────────────                    ─────                     ─────
  transcript replay ─┐             one append-only conversation:                  items                     design-doc.md
@@ -72,7 +74,7 @@ The work is split by how fast and how globally each part has to think.
 - Each tool call is **applied while the response is still streaming**, so the doc updates call by call. The model gets a second round only when a call fails validation.
 
 **The editor** (`src/agent/editor.ts`) maintains the diagram and the summary.
-- It runs when architecture-relevant items change: debounced by 4 s, at most 15 s behind, and once at the end.
+- It runs when architecture-relevant items change: debounced by 5 s, at most 20 s behind, and once at the end.
 - It is **declarative**. Given all the items and the current diagram, the model returns the *complete* intended diagram and summary. Code diffs that against the current diagram and applies only the difference.
 - Same decisions in, same diagram out: the diagram can't accumulate stale edits, and applying the plan twice changes nothing.
 - The summary is screened in code. Sentences that mention options that were turned down or replaced are dropped.
@@ -92,7 +94,7 @@ The layer only picks between options built from the current state. Writing stays
 
 **The projections** (`src/core/render.ts`) are pure functions of the state. Current sections show only current values; replaced, rejected and settled things go to the decision log.
 
-**Consolidation** runs every 5 minutes of meeting time, beside the normal turns, so it doesn't add lag. It is a one-off scribe pass over the last ~8 minutes and the state. It files loose items into topics, merges duplicate topics, accepts proposals the team clearly adopted, rejects ones that were overtaken, rewrites stale wording, and confirms low-confidence items the discussion has since settled. **At the end** the same pass runs over the whole meeting, then the editor runs once more.
+**Consolidation** runs every 10 minutes of meeting time, and only if the agent changed at least three things since the last one. It runs beside the normal turns, so it doesn't add lag. It is a one-off scribe pass over the last ~8 minutes and the state. It files loose items into topics, merges duplicate topics, accepts proposals the team clearly adopted, rejects ones that were overtaken, rewrites stale wording, and confirms low-confidence items the discussion has since settled. **At the end** the same pass runs over the whole meeting, then the editor runs once more.
 
 **Confidence.** When agreement is only implied, or an owner or value is unclear, the scribe marks the item `confidence: low`. The doc and the UI show it as "to confirm" until a person confirms it (one click) or a later pass does.
 
@@ -168,7 +170,7 @@ The weakest meeting is still the one with interleaved topics (22/27 in the final
 | Append-only, cached scribe conversation | Latency and cost stay flat; the model sees its own earlier calls. | Restarts from a snapshot on long meetings. |
 | Deterministic guards (grounding, stale values, status rules) | Failure modes that matter can't depend on the model behaving. | A rejected call costs a correction round. |
 | Rendered doc, not model prose | Old values can't survive a revision; structure is stable. | Prose is plainer; the editor's summary covers the narrative. |
-| Sonnet 5.5 (medium) for the scribe, Haiku 5.5 (low) for the editor and review passes | The scribe's judgement is what matters; diagram reconciliation is structured and checked by code, so a small model is enough. Measured per role: the editor fell from the largest cost line to about $0.04 per meeting. | GPT-6.1 Sol was cheaper but scored lower and lagged more (see Results). |
+| Sonnet 5.5 (medium) for the scribe, Sonnet 5.5 (low) for consolidation and the final review, Haiku 5.5 (low) for the editor | The scribe's judgement is what matters; diagram reconciliation is structured and checked by code, so a small model is enough. Measured per role: the editor fell from the largest cost line to about $0.04 per meeting. | GPT-6.1 Sol was cheaper but scored lower and lagged more (see Results). |
 | Concurrent consolidation, only after changes | Catches drift during long meetings without adding lag; idle stretches cost nothing. | A fix can arrive up to 10 minutes later than a perfect scribe would have made it. |
 | Lag is the model, not the pipeline | Measured per turn: 0.6 s debounce, about 1.6 s to first token, about 1.5 s to write the change. There is no queueing and a correction round is rare (1 turn in 40). | Going lower means fewer output tokens or a faster model, which trades quality. |
 
