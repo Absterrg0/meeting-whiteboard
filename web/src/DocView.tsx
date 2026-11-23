@@ -11,9 +11,12 @@ const md = new Marked({
   renderer: {
     html: ({ text }) => escapeHtml(text),
     // Only plain web links; a javascript: URL in model text must not become clickable.
-    link({ href, text }) {
+    // The link text is rendered through the inline parser (whose html renderer escapes),
+    // never interpolated raw.
+    link({ href, tokens }) {
+      const inner = this.parser.parseInline(tokens);
       const safe = /^(https?:|mailto:)/i.test(href) ? href : null;
-      return safe ? `<a href="${escapeHtml(safe)}" target="_blank" rel="noopener noreferrer">${text}</a>` : text;
+      return safe ? `<a href="${escapeHtml(safe)}" target="_blank" rel="noopener noreferrer">${inner}</a>` : inner;
     },
   },
 });
