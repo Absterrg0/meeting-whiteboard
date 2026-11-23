@@ -1,7 +1,7 @@
 import type { OpName } from "../../src/core/ops";
-import type { Snapshot } from "../../src/session";
+import type { LiveDelta, LiveSnapshot, SavedSessionInfo } from "../../src/wire";
 
-export type { Snapshot };
+export type { LiveDelta, LiveSnapshot, SavedSessionInfo };
 
 export interface TranscriptInfo {
   name: string;
@@ -80,6 +80,8 @@ export const api = {
     }),
   edit: (id: string, op: UiOp) =>
     request<{ ok: true }>(`/api/session/${encodeURIComponent(id)}/edit`, { method: "POST", json: { op } }),
+  saved: () => request<SavedSessionInfo[]>("/api/saved"),
+  openSaved: (name: string) => request<{ id: string }>("/api/saved/open", { method: "POST", json: { name } }),
   docUrl: (id: string) => `/api/session/${encodeURIComponent(id)}/doc.md`,
   eventsUrl: (id: string) => `/api/session/${encodeURIComponent(id)}/events`,
 };

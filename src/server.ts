@@ -18,7 +18,8 @@ import { Hono } from "hono";
 import { streamSSE } from "hono/streaming";
 import { emptyUsage, type AgentRuntime } from "./agent/index.js";
 import { isOpName, type Op } from "./core/ops.js";
-import { formatTs, type ChangeEvent, type ChangeKind, type DocState, type Utterance } from "./core/types.js";
+import { applyOp } from "./core/reducer.js";
+import { emptyState, formatTs, parseTs, type ChangeEvent, type ChangeKind, type DocState, type Utterance } from "./core/types.js";
 import { parseTranscriptDetailed, TranscriptParseError, type ParseResult } from "./ingest/transcript.js";
 import { attachAudioRelay } from "./live/audioRelay.js";
 import { apiGuard } from "./live/guard.js";
@@ -26,7 +27,7 @@ import { WEBHOOK_PATH } from "./live/recall.js";
 import { registerLiveRoutes } from "./live/routes.js";
 import { ensurePublicUrl, stopTunnel } from "./live/tunnel.js";
 import { MeetingSession, percentile } from "./session.js";
-import type { LiveDelta, LiveHeader, LiveSnapshot, SavedSessionInfo } from "./wire.js";
+import { statePatch, type LiveDelta, type LiveHeader, type LiveSnapshot, type SavedSessionInfo } from "./wire.js";
 
 const ROOT = process.cwd();
 const TRANSCRIPTS_DIR = resolve(ROOT, "transcripts");
@@ -99,7 +100,7 @@ function newSession(title: string, live: boolean): MeetingSession {
 
 /** An agent that never calls a model: a reopened session is a fixed record. */
 const NO_AGENT: AgentRuntime = {
-  config: { model: "saved session" },
+  config: { model: "recorded run" },
   step: async () => ({ applied: 0, errors: [], note: "", usage: emptyUsage() }),
 };
 
@@ -222,6 +223,75 @@ async function openSaved(name: string): Promise<MeetingSession | null> {
   return s;
 }
 
+/**
+ * Development: re-run a saved session's recorded operations against its transcript on the
+ * meeting clock, without calling a model, to watch the live UI (highlights, diagram moves).
+ */
+function replaySaved(name: string, speed: number): MeetingSession | null {
+  const dir = savedDir(name);
+  if (!dir) return null;
+  const eventsFile = join(dir, "events.jsonl");
+  if (!existsSync(eventsFile)) return null;
+  const recorded = readFileSync(eventsFile, "utf8")
+    .split("\n")
+    .filter(Boolean)
+    .map((l) => JSON.parse(l) as ChangeEvent);
+  const lines = savedTranscript(name, dir);
+  const title = (JSON.parse(readFileSync(join(dir, "state.json"), "utf8")) as DocState).meeting?.title || name;
+  disposeAll();
+  const id = `replay-${name}-${Date.now()}`.slice(0, 120);
+  const s = new MeetingSession({ id, title, agent: NO_AGENT, manual: true, reviewOnFinish: false });
+  s.state = emptyState();
+  s.mode = "replay";
+  s.speed = speed;
+  s.status = "running";
+  sessions.set(id, s);
+  sessionMeta.set(id, { createdAt: Date.now(), readOnly: false });
+  const LAG = 3; // meeting seconds between a line and the change it causes
+  const steps: { t: number; run: () => void }[] = [];
+  for (const u of lines) {
+    steps.push({ t: u.t, run: () => s.addUtterance({ speaker: u.speaker, text: u.text, t: u.t }) });
+  }
+  for (const e of recorded) {
+    const t = (Number.isNaN(parseTs(e.ts)) ? 0 : parseTs(e.ts)) + LAG;
+    steps.push({
+      t,
+      run: () => {
+        s.setClock(t);
+        const r = applyOp(s.state, { name: e.op, input: e.input } as Op, {
+          source: e.source,
+          transcript: s.transcript,
+          meetingTime: t,
+          seq: s.events.length + 1,
+        });
+        if (!r.ok) return;
+        s.state = r.state;
+        s.events.push(r.event);
+        void s.runTurn(); // the no-op agent marks the lines as processed
+        s.emit("change");
+      },
+    });
+  }
+  steps.sort((a, b) => a.t - b.t);
+  const timers: NodeJS.Timeout[] = [];
+  for (const st of steps) {
+    timers.push(
+      setTimeout(() => {
+        if (sessions.get(id) !== s) return;
+        s.setClock(Math.max(st.t, 0));
+        st.run();
+      }, (st.t / speed) * 1000),
+    );
+  }
+  const end = (steps.at(-1)?.t ?? 0) / speed + 1;
+  timers.push(
+    setTimeout(() => {
+      if (sessions.get(id) === s) void s.finish();
+    }, end * 1000),
+  );
+  return s;
+}
+
 // ---------- what the UI receives ----------
 
 function liveHeader(s: MeetingSession): LiveHeader {
@@ -289,8 +359,9 @@ app.post("/api/transcript/parse", async (c) => {
 app.get("/api/saved", (c) => c.json(listSaved()));
 
 app.post("/api/saved/open", async (c) => {
-  const body = await readJson<{ name: string }>(c.req.raw);
-  const s = await openSaved(String(body.name ?? ""));
+  const body = await readJson<{ name: string; replay: number }>(c.req.raw);
+  const name = String(body.name ?? "");
+  const s = Number(body.replay) > 0 ? replaySaved(name, Number(body.replay)) : await openSaved(name);
   if (!s) return c.json({ error: `no saved session '${body.name}'` }, 404);
   return c.json({ id: s.id });
 });
@@ -446,6 +517,7 @@ app.get("/api/session/:id/events", (c) => {
     const MIN_GAP_MS = 250;
     // What this client already has.
     let sentState: DocState | null = null;
+    const seen = new Map<string, string>();
     let sentLines = 0;
     let sentEvents = 0;
     let sentLog = 0;
@@ -460,6 +532,8 @@ app.get("/api/session/:id/events", (c) => {
     const sendFull = async () => {
       const snap = liveSnapshot(s);
       sentState = s.state;
+      seen.clear();
+      statePatch(s.state, seen);
       sentLines = s.transcript.length;
       sentEvents = s.events.length;
       sentLog = s.log.length;
@@ -472,7 +546,7 @@ app.get("/api/session/:id/events", (c) => {
       lastSent = Date.now();
       const delta: LiveDelta = {
         ...liveHeader(s),
-        state: s.state !== sentState ? s.state : undefined,
+        patch: s.state !== sentState ? statePatch(s.state, seen) : undefined,
         transcriptFrom: sentLines,
         transcript: s.transcript.slice(sentLines),
         eventsFrom: sentEvents,

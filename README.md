@@ -4,7 +4,7 @@ An agent that joins a technical meeting and keeps a design doc and an architectu
 
 It takes the meeting as it happens: a transcript replayed in real time (any common export format), your microphone or a meeting tab's audio, or a bot that joins a Zoom / Google Meet / Teams call. From that it maintains:
 
-- a **design doc**: summary, requirements and constraints, architecture, decisions with their reasons, open questions, action items, a decision log of what was turned down or replaced, and a changelog;
+- a **design doc organised by topic**: a summary, requirements and constraints, the architecture, then one section per question the meeting worked on ("Delivery queue", "Secret storage"), each with its current answer and reason, open points, owners, and what was considered and turned down or replaced; plus open questions, action items and a changelog;
 - a **diagram** (Mermaid) of the design the team agreed on, with undecided parts drawn as TBD and rejected options never shown;
 - an **audit trail**: every change is an event tied to the line that caused it, with a verbatim quote.
 
@@ -56,7 +56,7 @@ Live sources (microphone, meeting tab, Recall.ai bot) are described in [docs/liv
 
 The work is split by how fast and how globally each part has to think.
 
-**The scribe** (`src/agent/scribe.ts`) turns what is said into item operations: `record_item`, `update_item`, `supersede_item`, `set_meeting_info`.
+**The scribe** (`src/agent/scribe.ts`) turns what is said into operations on **topics** and **items**: `upsert_topic`, `record_item`, `update_item`, `supersede_item`, `confirm_item`, `set_meeting_info`. A topic is one question the meeting works on ("Which queue carries deliveries?"). Every option, decision, open question and owner for that question hangs off it, and a topic can have **at most one live answer**: a second accepted decision in the same topic is refused, so changing an answer is always an explicit supersede, never two contradictory "decided" items.
 - It runs after every speaker turn. Lines that arrive while it is busy go into its next turn, so a slow call never drops input or builds a queue.
 - It keeps **one append-only conversation per meeting**, so each turn sends only the new lines. Everything before them is a cached prefix, which keeps the time to first token and the cost flat as the meeting goes on. After 40 turns or 60k tokens it restarts from a snapshot of the state, so long meetings stay bounded.
 - Each tool call is **applied while the response is still streaming**, so the doc updates call by call. The model gets a second round only when a call fails validation.
@@ -76,11 +76,15 @@ The work is split by how fast and how globally each part has to think.
 
 **The projections** (`src/core/render.ts`) are pure functions of the state. Current sections show only current values; replaced, rejected and settled things go to the decision log.
 
-**At the end** the scribe runs one review pass over the full transcript (adopted-but-unmarked proposals, stale wording, duplicates), then the editor runs once more.
+**Consolidation** runs every 5 minutes of meeting time, beside the normal turns, so it doesn't add lag. It is a one-off scribe pass over the last ~8 minutes and the state. It files loose items into topics, merges duplicate topics, accepts proposals the team clearly adopted, rejects ones that were overtaken, rewrites stale wording, and confirms low-confidence items the discussion has since settled. **At the end** the same pass runs over the whole meeting, then the editor runs once more.
+
+**Confidence.** When agreement is only implied, or an owner or value is unclear, the scribe marks the item `confidence: low`. The doc and the UI show it as "to confirm" until a person confirms it (one click) or a later pass does.
 
 ### The state
 
-Items have a kind (`requirement`, `non_goal`, `fact`, `decision`, `open_question`, `action_item`) and a status (`proposed`, `accepted`, `tentative`, `rejected`, `superseded`, `open`, `resolved`, `done`, `dropped`). Each keeps its evidence (time, speaker, quote), its history of changes with reasons, and its supersede links.
+**Topics** have a title and a question. Their status is derived from their items, never set by the model: decided, tentative, open, under discussion, or closed (`src/core/topics.ts`).
+
+**Items** have a kind (`requirement`, `non_goal`, `fact`, `decision`, `open_question`, `action_item`), a status (`proposed`, `accepted`, `tentative`, `rejected`, `superseded`, `open`, `resolved`, `done`, `dropped`), an optional topic and a confidence. Each keeps its evidence (time, speaker, quote), its history of changes with reasons, and its supersede links. Every change is an event with a kind (decided, proposed, rejected, replaced, revised, opened, resolved, action…), which drives the activity feed.
 
 Diagram components and edges carry a **basis**: the item ids that put them in the design. Visibility is derived from the basis, not remembered by a model:
 
@@ -98,7 +102,7 @@ These are in `src/agent/prompt.ts`, as a status rubric applied the same way ever
 - An explicit call or an explicit endorsement makes a decision; so does the group building on a proposal without objection. Job titles don't count.
 - "For now", "for v1, revisit", "unless the load test fails" make it tentative.
 - "Not deciding today" or a debate with no conclusion makes an open question.
-- One item per independent choice, so a reversal of one can supersede just that one.
+- One topic per independent question and one live answer per topic. A reversal records the new option and supersedes the old answer.
 - A revised value updates the existing item. A relative change ("double it") is resolved to the number.
 - A reason is only recorded if someone gave one; "the team agreed" is not a reason.
 
