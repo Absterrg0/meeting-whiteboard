@@ -84,7 +84,8 @@ export function attendeeCreateBotPayload(opts: {
     recording_settings: { format: "none" },
     // Zoom closed captions need Attendee's web adapter (the native SDK needs Zoom app credentials).
     ...(isZoom && (opts.transcription ?? "captions") === "captions" ? { zoom_settings: { sdk: "web" } } : {}),
-    webhooks: [{ url: opts.webhookUrl, triggers: [...ATTENDEE_TRIGGERS] }],
+    // No webhook URL (no public tunnel): the app polls the transcript instead.
+    ...(opts.webhookUrl ? { webhooks: [{ url: opts.webhookUrl, triggers: [...ATTENDEE_TRIGGERS] }] } : {}),
     metadata: { source: "meeting-whiteboard" },
   };
 }
@@ -121,7 +122,27 @@ export class AttendeeClient {
     private fetchImpl: typeof fetch = fetch,
   ) {}
 
+  /**
+   * Retries what certainly never reached Attendee (no connection, or a tunnel/gateway error
+   * page), so a brief tunnel drop doesn't fail a bot. GETs also retry other 5xx; a POST that
+   * may have reached Attendee is not repeated, so a bot is never created twice.
+   */
   private async call<T>(method: string, path: string, body?: unknown): Promise<T> {
+    const delays = (process.env.ATTENDEE_RETRY_MS ?? "500,1500,3000").split(",").map(Number);
+    for (let attempt = 0; ; attempt++) {
+      try {
+        return await this.callOnce<T>(method, path, body);
+      } catch (e) {
+        const status = e instanceof AttendeeError ? e.status : 0;
+        const undelivered = status === 530 || status === 521 || status === 523 || (e instanceof AttendeeError && e.message.startsWith("cannot reach"));
+        const retry = undelivered || (method === "GET" && status >= 500);
+        if (!retry || attempt >= delays.length) throw e;
+        await new Promise((r) => setTimeout(r, delays[attempt]));
+      }
+    }
+  }
+
+  private async callOnce<T>(method: string, path: string, body?: unknown): Promise<T> {
     if (!this.cfg.apiKey) throw new AttendeeError("ATTENDEE_API_KEY is not set", 400);
     let res: Response;
     try {
@@ -147,7 +168,9 @@ export class AttendeeClient {
     if (!res.ok) {
       const detail = typeof data === "string" ? data : JSON.stringify(data);
       const hint = res.status === 401 || res.status === 403 ? " (check ATTENDEE_API_KEY: create one under API Keys in Attendee's UI)" : "";
-      throw new AttendeeError(`Attendee API ${method} ${path} -> ${res.status}: ${detail.slice(0, 400)}${hint}`, res.status);
+      // Tunnel/gateway error pages are HTML; say what happened instead of dumping the page.
+      const short = /^\s*<(!doctype|html)/i.test(detail) ? (res.status >= 520 ? "the tunnel to Attendee is down or reconnecting (Cloudflare error page)" : "an HTML error page from a proxy") : detail.slice(0, 400);
+      throw new AttendeeError(`Attendee API ${method} ${path} -> ${res.status}: ${short}${hint}`, res.status);
     }
     return data as T;
   }
@@ -158,6 +181,12 @@ export class AttendeeClient {
       "/bots",
       attendeeCreateBotPayload({ ...opts, transcription: this.cfg.transcription, language: this.cfg.language }),
     );
+  }
+
+  /** GET /bots/{id}/transcript: finished lines, each shaped like a transcript.update's data. */
+  transcript(id: string, updatedAfter: string | null) {
+    const q = updatedAfter ? `?updated_after=${encodeURIComponent(updatedAfter)}` : "";
+    return this.call<unknown[]>("GET", `/bots/${encodeURIComponent(id)}/transcript${q}`).then((r) => (Array.isArray(r) ? r : []));
   }
 
   getBot(id: string) {

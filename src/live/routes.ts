@@ -13,7 +13,7 @@
  */
 import type { Context, Hono } from "hono";
 import { transcribeConfig, type LiveSession } from "./audioRelay.js";
-import { BOT_PROVIDERS, BotProviderError, botProviders, selectedProviderId, type BotProvider, type BotProviderId, type BotStatus } from "./bots.js";
+import { BOT_PROVIDERS, BotProviderError, botProviders, selectedProviderId, type BotProvider, type BotEvent, type BotProviderId, type BotStatus } from "./bots.js";
 import { meetingPlatform, meetingTimeFor, newToken, recallConfig, tokensEqual, type BotRecord, type MappedUtterance } from "./recall.js";
 import { cloudflaredInstalled, currentPublicUrl, ensurePublicUrl } from "./tunnel.js";
 
@@ -48,7 +48,7 @@ const STATUS_CACHE_MS = 2000;
 const MAX_SEEN_KEYS = 5000;
 /** A caption line counts as finished after this long without an update. */
 const captionSettleMs = () => Number(process.env.CAPTION_SETTLE_MS ?? 1800);
-type UtteranceEvent = { speaker: string; text: string; start: number | null; end: number | null; key?: string };
+type UtteranceEvent = Extract<BotEvent, { kind: "utterance" }>;
 
 export function registerLiveRoutes(app: Hono, deps: LiveRouteDeps) {
   const env = deps.env ?? process.env;
@@ -118,6 +118,7 @@ export function registerLiveRoutes(app: Hono, deps: LiveRouteDeps) {
         rec.left = true;
         console.log(`bot ${rec.id}: stuck joining; retried as ${bot.id}`);
         watchJoin(next, webhookUrl);
+        startPolling(next);
       } catch (e) {
         rec.left = true;
         rec.failure = `The bot couldn't be restarted: ${(e as Error).message}. Capture the meeting tab's audio instead.`;
@@ -176,11 +177,14 @@ export function registerLiveRoutes(app: Hono, deps: LiveRouteDeps) {
     if (!provider.configured) return c.json({ error: provider.setupHint }, 400);
     const botName = String(body.bot_name ?? "").trim().slice(0, 100) || "Meeting Whiteboard";
 
-    let base: string;
+    let base: string | null;
     try {
       base = provider.webhookBaseUrl ?? (await publicUrl());
     } catch (e) {
-      return c.json({ error: (e as Error).message }, 400);
+      // A provider we can poll still works without a public URL (pull only, a little slower).
+      if (!provider.pollTranscript) return c.json({ error: (e as Error).message }, 400);
+      console.warn(`no public URL for webhooks (${(e as Error).message}); ${provider.id} bot will be polled only`);
+      base = null;
     }
 
     let session = typeof body.session_id === "string" ? deps.getSession(body.session_id) : undefined;
@@ -189,7 +193,7 @@ export function registerLiveRoutes(app: Hono, deps: LiveRouteDeps) {
     session ??= deps.createLiveSession(`Meeting (${meetingPlatform(meetingUrl)!.replace("_", " ")})`);
 
     const token = newToken();
-    const webhookUrl = `${base}${provider.webhookPath}?token=${encodeURIComponent(token)}`;
+    const webhookUrl = base ? `${base}${provider.webhookPath}?token=${encodeURIComponent(token)}` : "";
     try {
       const bot = await provider.createBot({ meetingUrl, botName, webhookUrl });
       const rec: LiveBotRecord = {
@@ -212,6 +216,7 @@ export function registerLiveRoutes(app: Hono, deps: LiveRouteDeps) {
       };
       bots.set(bot.id, rec);
       watchJoin(rec, webhookUrl);
+      startPolling(rec);
       console.log(`${provider.id} bot ${bot.id} -> ${meetingUrl} (session ${session.id}, webhook ${base}${provider.webhookPath})`);
       return c.json({ bot: view(rec, { status: bot.status, error: null }), sessionId: session.id });
     } catch (e) {
@@ -241,6 +246,100 @@ export function registerLiveRoutes(app: Hono, deps: LiveRouteDeps) {
     }
   });
 
+  /** Adds one finished line to the bot's session. */
+  function emitUtterance(r: LiveBotRecord, ev: UtteranceEvent) {
+    const s = deps.getSession(r.sessionId);
+    if (!s) return;
+    const u = { start: ev.start, end: ev.end } as MappedUtterance;
+    const t = meetingTimeFor(r, u, s.meetingTime(), s.transcript.at(-1)?.t ?? 0);
+    s.addUtterance({ speaker: ev.speaker, text: ev.text, t });
+    r.utterances++;
+    if (!r.participants.includes(ev.speaker)) r.participants.push(ev.speaker);
+  }
+
+  function markSeen(r: LiveBotRecord, key: string) {
+    if (r.seen.size >= MAX_SEEN_KEYS) r.seen.clear();
+    r.seen.add(key);
+  }
+
+  function flushPending(r: LiveBotRecord, key: string) {
+    const p = r.pending?.get(key);
+    if (!p) return;
+    clearTimeout(p.timer);
+    r.pending!.delete(key);
+    markSeen(r, key);
+    emitUtterance(r, p.ev);
+  }
+
+  /**
+   * The one way bot events enter a session, whether pushed (webhook) or pulled (poller).
+   * Lines are deduplicated by key, so the two paths can overlap freely.
+   */
+  function ingest(rec: LiveBotRecord, events: BotEvent[]) {
+    rec.lastEventAt = new Date().toISOString();
+    for (const ev of events) {
+      if (ev.kind === "utterance") {
+        if (!ev.key) {
+          emitUtterance(rec, ev);
+          continue;
+        }
+        if (rec.seen.has(ev.key)) continue; // already added (the other path, or a retried delivery)
+        if (!ev.partial) {
+          // Final text (speech-to-text on the participant's audio): add it at once.
+          markSeen(rec, ev.key);
+          emitUtterance(rec, ev);
+          continue;
+        }
+        // Captions arrive as a growing, revised line under one key ("How are you?" -> "How are
+        // you? Okay, so let's start..."). Keep the newest text and add the line once it settles:
+        // when the same speaker starts a new line, or after captionSettleMs() without an update.
+        const pending = (rec.pending ??= new Map());
+        for (const [k, p] of pending) if (k !== ev.key && p.ev.speaker === ev.speaker) flushPending(rec, k);
+        const prev = pending.get(ev.key);
+        if (prev) clearTimeout(prev.timer);
+        pending.set(ev.key, { ev, timer: setTimeout(() => flushPending(rec, ev.key!), captionSettleMs()) });
+      } else if (ev.kind === "participant") {
+        if (ev.action === "join" && !rec.participants.includes(ev.name)) rec.participants.push(ev.name);
+      } else if (ev.kind === "status") {
+        statusCache.set(rec.id, { at: Date.now(), status: ev.status, error: null });
+      }
+    }
+  }
+
+  /**
+   * Pull loop: webhooks need the provider to reach this machine through a tunnel, and a tunnel
+   * can drop. Polling the provider's transcript makes the pull the source of truth and the
+   * webhook only a fast path, so a dropped tunnel delays lines instead of losing them.
+   */
+  function startPolling(rec: LiveBotRecord) {
+    const provider = providers()[rec.provider];
+    if (!provider.pollTranscript) return;
+    const every = Number(process.env.BOT_POLL_MS ?? 2500);
+    let since: string | null = null;
+    let busy = false;
+    const timer = setInterval(async () => {
+      if (busy) return;
+      const done = rec.left || !!rec.replacedBy || !!rec.failure || !deps.getSession(rec.sessionId) || deps.getSession(rec.sessionId)!.status === "done";
+      const st = statusCache.get(rec.id)?.status;
+      if (done || (st && ["ended", "fatal_error", "left"].includes(st.code))) {
+        clearInterval(timer);
+        return;
+      }
+      busy = true;
+      const started = new Date(Date.now() - 30_000).toISOString(); // overlap absorbs clock skew; keys dedupe
+      try {
+        const events = await provider.pollTranscript!(rec.id, since);
+        if (events.length) ingest(rec, events);
+        since = started;
+      } catch {
+        // Unreachable for now: keep `since`, so the next successful poll catches up.
+      } finally {
+        busy = false;
+      }
+    }, every);
+    timer.unref?.();
+  }
+
   const webhook = (providerId: BotProviderId) => async (c: Context) => {
     const provider = providers()[providerId];
     const raw = await c.req.text();
@@ -262,54 +361,7 @@ export function registerLiveRoutes(app: Hono, deps: LiveRouteDeps) {
     const token = c.req.query("token") ?? "";
     if (!rec || rec.provider !== providerId || !token || !tokensEqual(token, rec.token)) return c.json({ error: "unknown bot or bad token" }, 401);
 
-    rec.lastEventAt = new Date().toISOString();
-    const session = deps.getSession(rec.sessionId);
-    const emitUtterance = (r: LiveBotRecord, ev: UtteranceEvent) => {
-      const s = deps.getSession(r.sessionId);
-      if (!s) return;
-      const u = { start: ev.start, end: ev.end } as MappedUtterance;
-      const t = meetingTimeFor(r, u, s.meetingTime(), s.transcript.at(-1)?.t ?? 0);
-      s.addUtterance({ speaker: ev.speaker, text: ev.text, t });
-      r.utterances++;
-      if (!r.participants.includes(ev.speaker)) r.participants.push(ev.speaker);
-    };
-    const flushPending = (r: LiveBotRecord, key: string) => {
-      const p = r.pending?.get(key);
-      if (!p) return;
-      clearTimeout(p.timer);
-      r.pending!.delete(key);
-      if (r.seen.size >= MAX_SEEN_KEYS) r.seen.clear();
-      r.seen.add(key);
-      emitUtterance(r, p.ev);
-    };
-    for (const ev of provider.mapEvent(body)) {
-      if (ev.kind === "utterance" && session) {
-        if (!ev.key) {
-          emitUtterance(rec, ev);
-          continue;
-        }
-        if (rec.seen.has(ev.key)) continue; // retried delivery of a line already added
-        if (!ev.partial) {
-          // Final text (speech-to-text on the participant's audio): add it at once.
-          if (rec.seen.size >= MAX_SEEN_KEYS) rec.seen.clear();
-          rec.seen.add(ev.key);
-          emitUtterance(rec, ev);
-          continue;
-        }
-        // Captions arrive as a growing, revised line under one key ("How are you?" -> "How are
-        // you? Okay, so let's start..."). Keep the newest text and add the line once it settles:
-        // when the same speaker starts a new line, or after captionSettleMs() without an update.
-        const pending = (rec.pending ??= new Map());
-        for (const [k, p] of pending) if (k !== ev.key && p.ev.speaker === ev.speaker) flushPending(rec, k);
-        const prev = pending.get(ev.key);
-        if (prev) clearTimeout(prev.timer);
-        pending.set(ev.key, { ev, timer: setTimeout(() => flushPending(rec, ev.key!), captionSettleMs()) });
-      } else if (ev.kind === "participant") {
-        if (ev.action === "join" && !rec.participants.includes(ev.name)) rec.participants.push(ev.name);
-      } else if (ev.kind === "status") {
-        statusCache.set(rec.id, { at: Date.now(), status: ev.status, error: null });
-      }
-    }
+    ingest(rec, provider.mapEvent(body));
     // Always 2xx for an authenticated event, even if the session is gone, so the provider does not retry.
     return c.json({ ok: true });
   };

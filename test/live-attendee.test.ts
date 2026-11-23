@@ -159,6 +159,9 @@ class FakeSession implements LiveSession {
 describe("live routes with a fake Attendee API", () => {
   const settle = () => new Promise((r) => setTimeout(r, 30));
   process.env.CAPTION_SETTLE_MS = "5";
+  process.env.ATTENDEE_RETRY_MS = "1,1,1";
+  process.env.BOT_POLL_MS = "600000";
+  const transcriptRows: unknown[] = [];
   function setup(env: NodeJS.ProcessEnv = { BOT_PROVIDER: "attendee", ATTENDEE_API_KEY: "att-key", ATTENDEE_BASE_URL: "http://attendee.local:8000/" }) {
     const session = new FakeSession();
     const calls: { method: string; url: string; body: unknown; auth: string | null }[] = [];
@@ -166,6 +169,7 @@ describe("live routes with a fake Attendee API", () => {
       calls.push({ method: init.method!, url, body: init.body ? JSON.parse(String(init.body)) : null, auth: new Headers(init.headers).get("authorization") });
       if (url.endsWith("/api/v1/bots") && init.method === "POST")
         return new Response(JSON.stringify({ id: "bot_abc", meeting_url: "x", state: "joining", transcription_state: "not_started" }), { status: 201 });
+      if (url.includes("/transcript")) return new Response(JSON.stringify(transcriptRows));
       if (url.endsWith("/leave")) return new Response(JSON.stringify({ id: "bot_abc", state: "leaving" }));
       return new Response(JSON.stringify({ id: "bot_abc", state: "joined_recording", transcription_state: "in_progress" }));
     }) as typeof fetch;
@@ -194,7 +198,7 @@ describe("live routes with a fake Attendee API", () => {
     expect(res.status).toBe(200);
     expect(await res.json()).toMatchObject({ bot: { id: "bot_abc", provider: "attendee", status: { code: "joining" } }, sessionId: "s1" });
     expect(calls[0]).toMatchObject({ method: "POST", url: "http://attendee.local:8000/api/v1/bots", auth: "Token att-key" });
-    const webhookUrl = (calls[0]!.body as ReturnType<typeof attendeeCreateBotPayload>).webhooks[0]!.url;
+    const webhookUrl = (calls[0]!.body as ReturnType<typeof attendeeCreateBotPayload>).webhooks![0]!.url;
     expect(webhookUrl).toMatch(/^https:\/\/tunnel\.example\/api\/attendee\/webhook\/\?token=/);
     const token = new URL(webhookUrl).searchParams.get("token")!;
     expect(bots.get("bot_abc")!.token).toBe(token);
@@ -237,6 +241,25 @@ describe("live routes with a fake Attendee API", () => {
     expect(calls.at(-1)).toMatchObject({ method: "POST", url: "http://attendee.local:8000/api/v1/bots/bot_abc/leave" });
   });
 
+  it("pulls the transcript when webhooks don't arrive (tunnel down), without duplicating pushed lines", async () => {
+    process.env.BOT_POLL_MS = "10";
+    try {
+      const { session, bots, post } = setup({ BOT_PROVIDER: "attendee", ATTENDEE_API_KEY: "k", ATTENDEE_BASE_URL: "http://attendee.local:8000", ATTENDEE_TRANSCRIPTION: "openai" });
+      transcriptRows.length = 0;
+      await post("/api/bot", { meeting_url: "https://meet.google.com/abc-defg-hij" });
+      const hook = `${ATTENDEE_WEBHOOK_PATH}?token=${bots.get("bot_abc")!.token}`;
+      // One line arrives by webhook; the poll returns it again plus one the webhook never delivered.
+      await post(hook, transcriptUpdate("bot_abc", "Priya Raman", "Let's use SQS.", 1732385000000, 2000), tunnel);
+      transcriptRows.push(transcriptUpdate("bot_abc", "Priya Raman", "Let's use SQS.", 1732385000000, 2000).data, transcriptUpdate("bot_abc", "Marcus Lee", "Fine by me.", 1732385003000, 1000, "16778241").data);
+      await new Promise((r) => setTimeout(r, 60));
+      expect(session.transcript.map((u) => `${u.speaker}: ${u.text}`)).toEqual(["Priya Raman: Let's use SQS.", "Marcus Lee: Fine by me."]);
+      bots.get("bot_abc")!.left = true; // stops the poller
+    } finally {
+      process.env.BOT_POLL_MS = "600000";
+      transcriptRows.length = 0;
+    }
+  });
+
   it("verifies X-Webhook-Signature when ATTENDEE_WEBHOOK_SECRET is set", async () => {
     const secret = Buffer.from("w".repeat(32)).toString("base64");
     const { session, bots, post } = setup({ BOT_PROVIDER: "attendee", ATTENDEE_API_KEY: "k", ATTENDEE_WEBHOOK_SECRET: secret });
@@ -255,7 +278,7 @@ describe("live routes with a fake Attendee API", () => {
     const { calls, post } = setup({ BOT_PROVIDER: "attendee", ATTENDEE_API_KEY: "k", ATTENDEE_WEBHOOK_BASE_URL: "http://host.docker.internal:8787/" });
     await post("/api/bot", { meeting_url: "https://zoom.us/j/1" });
     const body = calls[0]!.body as ReturnType<typeof attendeeCreateBotPayload>;
-    expect(body.webhooks[0]!.url).toMatch(/^http:\/\/host\.docker\.internal:8787\/api\/attendee\/webhook\/\?token=/);
+    expect(body.webhooks![0]!.url).toMatch(/^http:\/\/host\.docker\.internal:8787\/api\/attendee\/webhook\/\?token=/);
     expect(body).toMatchObject({ zoom_settings: { sdk: "web" } });
 
     const { post: post2 } = setup({ BOT_PROVIDER: "attendee" });

@@ -89,6 +89,8 @@ export interface BotProvider {
   verifyWebhook(header: Headers, rawBody: string, body: unknown): void;
   botIdOf(body: unknown): string | null;
   mapEvent(body: unknown): BotEvent[];
+  /** Transcript lines updated since `since` (ISO time; null = all), when the provider can be polled. */
+  pollTranscript?(id: string, since: string | null): Promise<BotEvent[]>;
 }
 
 const wrap = async <T>(p: Promise<T>): Promise<T> => {
@@ -163,6 +165,16 @@ export function attendeeProvider(env: NodeJS.ProcessEnv, fetchImpl: typeof fetch
       verifyAttendeeSignature(cfg.webhookSecret, header("x-webhook-signature"), body);
     },
     botIdOf: attendeeEventBotId,
+    async pollTranscript(id, since) {
+      const rows = await wrap(client.transcript(id, since));
+      const out: BotEvent[] = [];
+      for (const data of rows) {
+        // Same shape as a transcript.update webhook's data, so it maps (and dedupes) the same way.
+        const u = mapAttendeeTranscript({ trigger: "transcript.update", bot_id: id, data });
+        if (u) out.push({ kind: "utterance", speaker: u.speaker, text: u.text, start: u.start, end: u.end, key: u.key, partial: cfg.transcription === "captions" });
+      }
+      return out;
+    },
     mapEvent(body) {
       const out: BotEvent[] = [];
       const u = mapAttendeeTranscript(body);
