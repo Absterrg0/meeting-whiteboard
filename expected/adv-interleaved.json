@@ -1,0 +1,171 @@
+{
+  "checks": [
+    {
+      "id": "sla",
+      "type": "llm",
+      "desc": "Availability and export target",
+      "expect": "Requirements include 99.9% monthly availability and export under 30 seconds for a 200-page notebook."
+    },
+    {
+      "id": "tenant",
+      "type": "llm",
+      "desc": "Final tenancy",
+      "expect": "Separate schema per organization accepted for v1 with migration tooling; shared tables plus RLS rejected because policy coverage is hard to audit."
+    },
+    {
+      "id": "tenant-history",
+      "type": "llm",
+      "desc": "Superseded tenancy",
+      "expect": "Earlier tentative shared-table/RLS option is superseded/rejected with policy-coverage reason."
+    },
+    {
+      "id": "export",
+      "type": "llm",
+      "desc": "Durable render flow",
+      "expect": "API creates RabbitMQ job; workers render PDFs and store in regional S3-compatible storage, returning a job ID."
+    },
+    {
+      "id": "download",
+      "type": "llm",
+      "desc": "Authenticated download",
+      "expect": "24-hour link identifies job, but download requires authenticated session; no public bearer URL."
+    },
+    {
+      "id": "retention",
+      "type": "llm",
+      "desc": "Export time values",
+      "expect": "Files retained seven days; link validity is 24 hours. Distinct values."
+    },
+    {
+      "id": "worker",
+      "type": "llm",
+      "desc": "Worker deployment",
+      "expect": "Workers run as separate deployment on existing Kubernetes and choose organization schema from job."
+    },
+    {
+      "id": "backup",
+      "type": "llm",
+      "desc": "Backup design",
+      "expect": "Encrypted whole database daily snapshots plus WAL, RPO one hour, RTO four hours, quarterly restore tests."
+    },
+    {
+      "id": "replica",
+      "type": "llm",
+      "desc": "No replica decision",
+      "expect": "Reading exports from replica was discussed but not decided."
+    },
+    {
+      "id": "queue",
+      "type": "llm",
+      "desc": "Fair queue",
+      "expect": "One durable queue carries org and notebook IDs with fair scheduling."
+    },
+    {
+      "id": "cap",
+      "type": "llm",
+      "desc": "Tentative worker cap",
+      "expect": "12 workers per region tentative pending benchmark; autoscaling not accepted."
+    },
+    {
+      "id": "defer",
+      "type": "llm",
+      "desc": "Identity migration deferred",
+      "expect": "Identity provider migration explicitly deferred to next meeting, with no decision or owner."
+    },
+    {
+      "id": "threat",
+      "type": "llm",
+      "desc": "Threat model action",
+      "expect": "Sana owns tenancy threat model due next Wednesday."
+    },
+    {
+      "id": "restore-action",
+      "type": "llm",
+      "desc": "Restore runbook",
+      "expect": "Victor owns restore runbook due Friday."
+    },
+    {
+      "id": "actions",
+      "type": "llm",
+      "desc": "Reassigned load test",
+      "expect": "Sana owns export load test next Tuesday; Eli owns migration review Friday."
+    },
+    {
+      "id": "decline",
+      "type": "llm",
+      "desc": "Declined instrumentation",
+      "expect": "Victor declined queue-fairness instrumentation and no action was assigned."
+    },
+    {
+      "id": "smalltalk",
+      "type": "llm",
+      "desc": "No small talk",
+      "expect": "No incidental discussion is captured."
+    },
+    {
+      "id": "rabbit",
+      "type": "diagram_includes",
+      "desc": "RabbitMQ",
+      "pattern": "rabbitmq"
+    },
+    {
+      "id": "s3",
+      "type": "diagram_includes",
+      "desc": "S3",
+      "pattern": "s3|object stor"
+    },
+    {
+      "id": "workerdiag",
+      "type": "diagram_includes",
+      "desc": "Worker",
+      "pattern": "worker"
+    },
+    {
+      "id": "redis",
+      "type": "diagram_excludes",
+      "desc": "No Redis queue",
+      "pattern": "redis"
+    },
+    {
+      "id": "idp",
+      "type": "diagram_excludes",
+      "desc": "No IDP target component",
+      "pattern": "identity|idp"
+    },
+    {
+      "id": "schema",
+      "type": "doc_includes",
+      "desc": "Separate schema current",
+      "pattern": "separate schema",
+      "sections": "current"
+    },
+    {
+      "id": "rls",
+      "type": "doc_excludes",
+      "desc": "Shared RLS not current",
+      "pattern": "shared tables|row.level security|\\brls\\b",
+      "sections": "current"
+    },
+    {
+      "id": "link24",
+      "type": "doc_includes",
+      "desc": "24-hour link current",
+      "pattern": "24 hours?",
+      "sections": "current"
+    },
+    {
+      "id": "ret7",
+      "type": "doc_includes",
+      "desc": "Seven-day retention current",
+      "pattern": "7 days?",
+      "sections": "current"
+    },
+    {
+      "id": "rlslog",
+      "type": "doc_includes",
+      "desc": "Rejected shared model retained",
+      "pattern": "row.level security|shared tables",
+      "sections": "all"
+    }
+  ]
+}

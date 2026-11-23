@@ -1,0 +1,70 @@
+{"time": "00:00:03", "speaker": "Lena", "text": "Review of the package registry mirror for build farms. Workers wait on public registries."}
+{"time": "00:00:31", "speaker": "Omar", "text": "900 workers at peak, 70 percent Linux and rest macOS. Egress is capped at 2 gigabits per region."}
+{"time": "00:01:04", "speaker": "Priya", "text": "Package should be available in a region within two minutes of first request anywhere."}
+{"time": "00:01:24", "speaker": "Lena", "text": "Preserve upstream signatures and checksums, no repacking."}
+{"time": "00:01:51", "speaker": "Omar", "text": "Start with a pull-through cache in front of public registries."}
+{"time": "00:02:08", "speaker": "Priya", "text": "Yes, pull-through on first miss, then serve from regional mirror."}
+{"time": "00:02:27", "speaker": "Lena", "text": "npm and PyPI first; Maven can wait."}
+{"time": "00:02:44", "speaker": "Omar", "text": "Java builds have same pain. Include Maven Central day one."}
+{"time": "00:03:03", "speaker": "Lena", "text": "Fine, npm, PyPI, Maven. No Docker images; those use container registry."}
+{"time": "00:03:26", "speaker": "Priya", "text": "S3-compatible object store with metadata in Postgres?"}
+{"time": "00:03:43", "speaker": "Omar", "text": "Metadata in Postgres makes eviction easy. Objects immutable, keyed by registry and digest."}
+{"time": "00:04:05", "speaker": "Lena", "text": "Accepted: object store plus Postgres metadata."}
+{"time": "00:04:27", "speaker": "Priya", "text": "Shared cache, auth per build identity; namespace is audit only."}
+{"time": "00:04:51", "speaker": "Omar", "text": "Retention, I put 30 days after last access in draft."}
+{"time": "00:05:07", "speaker": "Lena", "text": "Make that 60 days, disk is cheap."}
+{"time": "00:05:19", "speaker": "Priya", "text": "Sixty works."}
+{"time": "00:05:36", "speaker": "Omar", "text": "Was that sixty days or sixty gigabytes?"}
+{"time": "00:05:42", "speaker": "Lena", "text": "Days. And when I say cut it in half, that means thirty from sixty, not original thirty."}
+{"time": "00:06:02", "speaker": "Priya", "text": "Hard cap maybe 4 terabytes per region."}
+{"time": "00:06:15", "speaker": "Omar", "text": "At 900 workers that could evict hot packages. Could be 8 terabytes."}
+{"time": "00:06:28", "speaker": "Lena", "text": "Use 8 TB per region, alert at 80 percent, accepted for first rollout."}
+{"time": "00:06:51", "speaker": "Priya", "text": "Replication between regions?"}
+{"time": "00:06:56", "speaker": "Omar", "text": "I would not replicate proactively. First request in a region fetches upstream."}
+{"time": "00:07:13", "speaker": "Lena", "text": "We need popular packages copied to all regions within two minutes of first request anywhere."}
+{"time": "00:07:29", "speaker": "Priya", "text": "Regional Kafka topic announces digest availability."}
+{"time": "00:07:42", "speaker": "Omar", "text": "Could have cache daemons poll each other."}
+{"time": "00:07:49", "speaker": "Lena", "text": "No, choose regional Kafka notification; regions fetch immutable object."}
+{"time": "00:08:20", "speaker": "Priya", "text": "Agreed."}
+{"time": "00:08:42", "speaker": "Omar", "text": "Upstream TLS, signed metadata, builders should not have write access."}
+{"time": "00:08:53", "speaker": "Priya", "text": "Service account only writer; build workers get region-scoped read-only credentials."}
+{"time": "00:09:16", "speaker": "Lena", "text": "Require provenance attestation?"}
+{"time": "00:09:20", "speaker": "Omar", "text": "Upstream signature and checksum required. Attestation format can follow, not launch gate."}
+{"time": "00:09:37", "speaker": "Priya", "text": "Open whether to store and expose provenance attestations. Omar, check what build platform emits?"}
+{"time": "00:09:52", "speaker": "Omar", "text": "I can inventory that by Thursday."}
+{"time": "00:10:13", "speaker": "Lena", "text": "Platform leads want more time for quarterly rebuilds, retention 90 days."}
+{"time": "00:10:26", "speaker": "Priya", "text": "Then storage cap needs reconsideration, 8 TB might be tight."}
+{"time": "00:10:36", "speaker": "Omar", "text": "Let us double that, from 8 TB to 16 TB per region, for headroom."}
+{"time": "00:10:50", "speaker": "Lena", "text": "Agreed, 16 TB and 90 days since last access."}
+{"time": "00:11:12", "speaker": "Priya", "text": "Cold packages cheap but metadata scans get expensive."}
+{"time": "00:11:25", "speaker": "Omar", "text": "Expire metadata and blobs together. No separate archive tier v1."}
+{"time": "00:11:41", "speaker": "Lena", "text": "Fine, expiration coordinated."}
+{"time": "00:12:01", "speaker": "Priya", "text": "Regional control plane?"}
+{"time": "00:12:07", "speaker": "Omar", "text": "Cache service serves admin API, no extra control plane."}
+{"time": "00:12:23", "speaker": "Lena", "text": "Agreed, one service per region, admin endpoint co-located."}
+{"time": "00:12:43", "speaker": "Priya", "text": "Rollout canary is 10 teams, then 50, then all build teams."}
+{"time": "00:13:01", "speaker": "Lena", "text": "Operational plan, not an architecture component."}
+{"time": "00:13:14", "speaker": "Omar", "text": "I will check attestations Thursday. Priya, benchmark object fetch latency?"}
+{"time": "00:13:29", "speaker": "Priya", "text": "I can do it by next Monday."}
+{"time": "00:13:38", "speaker": "Lena", "text": "Omar, write cache invalidation?"}
+{"time": "00:13:44", "speaker": "Omar", "text": "No, I cannot take another action this week. I am on incident rotation."}
+{"time": "00:13:53", "speaker": "Lena", "text": "Fair. I will own invalidation note by Friday."}
+{"time": "00:14:12", "speaker": "Priya", "text": "I can review; Lena owns write-up."}
+{"time": "00:14:23", "speaker": "Omar", "text": "Kafka is supported by data platform, existing regional Kafka."}
+{"time": "00:14:37", "speaker": "Lena", "text": "Retain Kafka, do not create a new cluster."}
+{"time": "00:14:55", "speaker": "Priya", "text": "What if we switch to a CDN?"}
+{"time": "00:15:01", "speaker": "Omar", "text": "Private packages and per-build auth make that awkward. Not proposing a replacement."}
+{"time": "00:15:18", "speaker": "Lena", "text": "Correct, no CDN in design."}
+{"time": "00:15:40", "speaker": "Priya", "text": "I still have latency benchmark Monday."}
+{"time": "00:15:49", "speaker": "Lena", "text": "I have invalidation Friday. Omar has attestation inventory Thursday."}
+{"time": "00:16:10", "speaker": "Omar", "text": "Inventory only, not attestation design."}
+{"time": "00:16:21", "speaker": "Lena", "text": "Got it."}
+{"time": "00:16:36", "speaker": "Priya", "text": "macOS signing?"}
+{"time": "00:16:41", "speaker": "Lena", "text": "Existing signing unchanged; out of scope."}
+{"time": "00:17:02", "speaker": "Omar", "text": "That is it."}
+{"time": "00:18:10", "speaker": "Lena", "text": "One more storage choice: Postgres metadata is our baseline, but what if we move metadata to DynamoDB to avoid regional database scaling?"}
+{"time": "00:18:27", "speaker": "Omar", "text": "I can support DynamoDB for metadata; item access is by registry and digest, so the key fits."}
+{"time": "00:18:41", "speaker": "Priya", "text": "Okay, let us accept DynamoDB metadata for the first region."}
+{"time": "00:19:03", "speaker": "Lena", "text": "Actually, the retention queries need relational joins to build eviction batches. We should go back to Postgres metadata; the DynamoDB option is superseded."}
+{"time": "00:19:20", "speaker": "Omar", "text": "Agreed, Postgres is still the right fit. Do not carry DynamoDB in the current design."}
+{"time": "00:25:00", "speaker": "Lena", "text": "Closing after the build leads joined late; no design changes."}

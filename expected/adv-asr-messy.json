@@ -1,0 +1,165 @@
+{
+  "checks": [
+    {
+      "id": "req-fast",
+      "type": "llm",
+      "desc": "Five-second freshness",
+      "expect": "Current requirement: telemetry appears in the operator console within five seconds."
+    },
+    {
+      "id": "req-buffer",
+      "type": "llm",
+      "desc": "Intermittent uplink buffer",
+      "expect": "Depot bridges buffer readings for about six hours during backhaul outages."
+    },
+    {
+      "id": "term-lorawan",
+      "type": "llm",
+      "desc": "ASR correction",
+      "expect": "LoRaWAN is the radio technology; the early garbled phrase is corrected in context."
+    },
+    {
+      "id": "dec-iot",
+      "type": "llm",
+      "desc": "Managed MQTT",
+      "expect": "AWS IoT Core is the accepted managed MQTT endpoint, not lab Mosquitto."
+    },
+    {
+      "id": "dec-dedupe",
+      "type": "llm",
+      "desc": "Stable reading identity",
+      "expect": "Readings have device ID and monotonic sequence; ingest deduplicates by that pair."
+    },
+    {
+      "id": "dec-kafka",
+      "type": "llm",
+      "desc": "Kiln keyed stream",
+      "expect": "Kafka is accepted behind IoT Core and partitioned by kiln ID."
+    },
+    {
+      "id": "dec-lambda",
+      "type": "llm",
+      "desc": "Lambda normalization",
+      "expect": "AWS Lambda remains to normalize the envelope before Kafka."
+    },
+    {
+      "id": "dec-timescale",
+      "type": "llm",
+      "desc": "Serving paths",
+      "expect": "TimescaleDB serves console queries/history and alarm consumers read the stream."
+    },
+    {
+      "id": "retention",
+      "type": "llm",
+      "desc": "Final retention",
+      "expect": "Ninety days queryable then S3 archive for seven years; one year is not current."
+    },
+    {
+      "id": "rejected-rules-db",
+      "type": "llm",
+      "desc": "Threshold ownership",
+      "expect": "A separate alarm rules database is rejected because the safety team owns thresholds; read from Safety Config."
+    },
+    {
+      "id": "stale",
+      "type": "llm",
+      "desc": "Stale display",
+      "expect": "Timestamp always visible; values older than 60 seconds get a stale indication."
+    },
+    {
+      "id": "encryption",
+      "type": "llm",
+      "desc": "Open bridge encryption",
+      "expect": "Bridge disk encryption remains open until Ivo checks oldest models with security; Ivo owns follow-up due Friday."
+    },
+    {
+      "id": "replay",
+      "type": "llm",
+      "desc": "Replay action",
+      "expect": "Pavel owns duplicate/out-of-order replay validation against Kafka consumer, due next Tuesday."
+    },
+    {
+      "id": "camera",
+      "type": "llm",
+      "desc": "No camera ingestion",
+      "expect": "Camera clips remain out of scope and are not a target pipeline component."
+    },
+    {
+      "id": "json",
+      "type": "llm",
+      "desc": "Envelope format",
+      "expect": "JSON envelope with required schema version is accepted."
+    },
+    {
+      "id": "smalltalk",
+      "type": "llm",
+      "desc": "Ignore screen glitch",
+      "expect": "The screen going black is not captured as a design item."
+    },
+    {
+      "id": "diag-kafka",
+      "type": "diagram_includes",
+      "desc": "Kafka appears",
+      "pattern": "kafka"
+    },
+    {
+      "id": "diag-iot",
+      "type": "diagram_includes",
+      "desc": "IoT Core appears",
+      "pattern": "iot core"
+    },
+    {
+      "id": "diag-ts",
+      "type": "diagram_includes",
+      "desc": "Timescale appears",
+      "pattern": "timescale"
+    },
+    {
+      "id": "diag-mosq",
+      "type": "diagram_excludes",
+      "desc": "No Mosquitto",
+      "pattern": "mosquitto"
+    },
+    {
+      "id": "diag-camera",
+      "type": "diagram_excludes",
+      "desc": "No camera component",
+      "pattern": "camera"
+    },
+    {
+      "id": "doc60",
+      "type": "doc_includes",
+      "desc": "Current 60-second threshold",
+      "pattern": "\\b60 seconds?\\b",
+      "sections": "current"
+    },
+    {
+      "id": "doc30",
+      "type": "doc_excludes",
+      "desc": "Old 30-second threshold absent current",
+      "pattern": "\\b30 seconds?\\b",
+      "sections": "current"
+    },
+    {
+      "id": "doc90",
+      "type": "doc_includes",
+      "desc": "Current 90-day retention",
+      "pattern": "\\b90 days?\\b",
+      "sections": "current"
+    },
+    {
+      "id": "docyear",
+      "type": "doc_excludes",
+      "desc": "One year not current",
+      "pattern": "\\b(one|1) year\\b",
+      "sections": "current"
+    },
+    {
+      "id": "docreject",
+      "type": "doc_includes",
+      "desc": "Rejected rules DB remains in log",
+      "pattern": "alarm rules database",
+      "sections": "all"
+    }
+  ]
+}

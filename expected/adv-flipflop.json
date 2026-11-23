@@ -1,0 +1,185 @@
+{
+  "checks": [
+    {
+      "id": "mirror",
+      "type": "llm",
+      "desc": "Regional package mirror",
+      "expect": "Regional pull-through mirror is accepted for npm, PyPI, Maven Central."
+    },
+    {
+      "id": "docker",
+      "type": "llm",
+      "desc": "Docker out of scope",
+      "expect": "Docker images remain on the separate container registry and are excluded."
+    },
+    {
+      "id": "storage",
+      "type": "llm",
+      "desc": "Blob and metadata storage",
+      "expect": "Immutable blobs use S3-compatible object storage with Postgres metadata."
+    },
+    {
+      "id": "retention-final",
+      "type": "llm",
+      "desc": "Final retention",
+      "expect": "Current expiration is 90 days after last access; 30 and 60 day values are superseded."
+    },
+    {
+      "id": "cap-final",
+      "type": "llm",
+      "desc": "Final capacity",
+      "expect": "Current per-region cap is 16 TB and alert threshold is 80%; earlier 8 TB is superseded."
+    },
+    {
+      "id": "regional-copy",
+      "type": "llm",
+      "desc": "Cross-region replication notice",
+      "expect": "Existing regional Kafka announces digest availability and regions fetch immutable objects."
+    },
+    {
+      "id": "access",
+      "type": "llm",
+      "desc": "Builder access",
+      "expect": "Only service account writes; build workers have read-only region-scoped access."
+    },
+    {
+      "id": "attestation-open",
+      "type": "llm",
+      "desc": "Attestation open and scoped action",
+      "expect": "Whether to store/expose provenance attestations remains open. Omar inventories existing build platform output by Thursday; he is not assigned an implementation."
+    },
+    {
+      "id": "control-plane",
+      "type": "llm",
+      "desc": "Single service",
+      "expect": "Regional cache service includes the admin endpoint; no separate control plane."
+    },
+    {
+      "id": "priya-action",
+      "type": "llm",
+      "desc": "Benchmark action",
+      "expect": "Priya owns object fetch latency benchmark due next Monday."
+    },
+    {
+      "id": "lena-action",
+      "type": "llm",
+      "desc": "Reassigned invalidation action",
+      "expect": "Lena owns cache invalidation write-up due Friday; Omar declined this action."
+    },
+    {
+      "id": "omar-action",
+      "type": "llm",
+      "desc": "Omar inventory action",
+      "expect": "Omar owns only the existing attestation inventory due Thursday."
+    },
+    {
+      "id": "cdn",
+      "type": "llm",
+      "desc": "CDN not chosen",
+      "expect": "CDN was floated and not selected as a replacement."
+    },
+    {
+      "id": "canary",
+      "type": "llm",
+      "desc": "Canary is rollout only",
+      "expect": "10/50 team rollout canary is an operational plan, not architecture."
+    },
+    {
+      "id": "smalltalk",
+      "type": "llm",
+      "desc": "Non-design details omitted",
+      "expect": "Incident rotation is not made into a system or decision."
+    },
+    {
+      "id": "pg",
+      "type": "diagram_includes",
+      "desc": "Postgres store",
+      "pattern": "postgres"
+    },
+    {
+      "id": "s3",
+      "type": "diagram_includes",
+      "desc": "Object store",
+      "pattern": "object|s3"
+    },
+    {
+      "id": "kafka",
+      "type": "diagram_includes",
+      "desc": "Kafka",
+      "pattern": "kafka"
+    },
+    {
+      "id": "cdn-no",
+      "type": "diagram_excludes",
+      "desc": "No CDN",
+      "pattern": "cdn"
+    },
+    {
+      "id": "control-no",
+      "type": "diagram_excludes",
+      "desc": "No separate control plane",
+      "pattern": "control plane"
+    },
+    {
+      "id": "ret90",
+      "type": "doc_includes",
+      "desc": "90-day retention",
+      "pattern": "\\b90 days?\\b",
+      "sections": "current"
+    },
+    {
+      "id": "ret60",
+      "type": "doc_excludes",
+      "desc": "No old 60-day value in current design",
+      "pattern": "\\b60 days?\\b",
+      "sections": "current"
+    },
+    {
+      "id": "ret30",
+      "type": "doc_excludes",
+      "desc": "No old 30-day value in current design",
+      "pattern": "\\b30 days?\\b",
+      "sections": "current"
+    },
+    {
+      "id": "cap16",
+      "type": "doc_includes",
+      "desc": "16 TB current cap",
+      "pattern": "\\b16 ?TB\\b|16 terabytes?",
+      "sections": "current"
+    },
+    {
+      "id": "cap8",
+      "type": "doc_excludes",
+      "desc": "No old 8 TB current cap",
+      "pattern": "\\b8 ?TB\\b|8 terabytes?",
+      "sections": "current"
+    },
+    {
+      "id": "attest-log",
+      "type": "doc_includes",
+      "desc": "Attestation option documented",
+      "pattern": "attestation",
+      "sections": "all"
+    },
+    {
+      "id": "metadata-a-b-a",
+      "type": "llm",
+      "desc": "Postgres then DynamoDB then Postgres",
+      "expect": "Metadata storage returns to Postgres as the final accepted choice after DynamoDB was accepted temporarily; the final reason is that retention queries need relational joins for eviction batches. DynamoDB is superseded/rejected and must appear only in history/log, not current state."
+    },
+    {
+      "id": "diag-no-dynamo",
+      "type": "diagram_excludes",
+      "desc": "DynamoDB absent from final architecture",
+      "pattern": "dynamodb"
+    },
+    {
+      "id": "doc-no-dynamo",
+      "type": "doc_excludes",
+      "desc": "DynamoDB absent from current design",
+      "pattern": "dynamodb",
+      "sections": "current"
+    }
+  ]
+}

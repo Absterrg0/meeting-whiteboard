@@ -1,0 +1,194 @@
+{"time": "00:00:04", "speaker": "Noor", "text": "Reviewing cold-chain telemetry ingestion. The present system emails CSV at shift end, and missing excursions are found too late."}
+{"time": "00:01:10", "speaker": "Cal", "text": "Requirement: temperature excursions reach the operations console within 30 seconds. Preserve device timestamp and calibration id."}
+{"time": "00:02:05", "speaker": "Bea", "text": "We have 6,000 sensors and bursts of 900 readings per second during reconnects."}
+{"time": "00:03:00", "speaker": "Noor", "text": "Start with HTTPS ingest from depot gateways into the ingest API; gateways buffer for eight hours."}
+{"time": "00:04:00", "speaker": "Cal", "text": "Use Kafka after ingest, keyed by sensor id, then a Go consumer writes latest state to TimescaleDB."}
+{"time": "00:05:00", "speaker": "Bea", "text": "Accepted for the first design. The API validates payload and sequence, consumer handles duplicate delivery."}
+{"time": "00:06:00", "speaker": "Noor", "text": "An early sketch has Redis for current readings, but it is optional until we see database load."}
+{"time": "00:10:00", "speaker": "Noor", "text": "The initial choice was one Kafka topic with 12 partitions, keyed by sensor ID."}
+{"time": "00:11:10", "speaker": "Noor", "text": "Noor update: The staging run is still going. The first pass spends most of its time warming the local cache, so the graph is noisy."}
+{"time": "00:11:25", "speaker": "Cal", "text": "I checked the logs from Tuesday. There are a few timeouts, but none line up with the data loss report."}
+{"time": "00:11:40", "speaker": "Bea", "text": "Can we leave that as an observation for now? It does not change the interface we are deciding today."}
+{"time": "00:11:55", "speaker": "Noor", "text": "The operations person is joining after their handoff. I sent the notes, but we should not infer agreement from that."}
+{"time": "00:12:10", "speaker": "Cal", "text": "I have a small concern about how this reads in the runbook. The on-call rotation changes next month."}
+{"time": "00:12:25", "speaker": "Bea", "text": "Bea update: We are still waiting on the test environment to finish importing the anonymized dataset."}
+{"time": "00:12:40", "speaker": "Noor", "text": "That number is from the last quarterly report, not a target. Let us keep it in meeting context only."}
+{"time": "00:12:55", "speaker": "Cal", "text": "I do not have a new proposal here. I am checking whether the dashboard label matches the service name."}
+{"time": "00:13:00", "speaker": "Noor", "text": "That number is from the last quarterly report, not a target. Let us keep it in meeting context only."}
+{"time": "00:13:10", "speaker": "Bea", "text": "The chart includes a weekend batch that will not run during the pilot; please do not size from that peak."}
+{"time": "00:13:25", "speaker": "Noor", "text": "We can bring the error budget discussion to the reliability review. It is outside today’s architecture call."}
+{"time": "00:13:30", "speaker": "Cal", "text": "I do not have a new proposal here. I am checking whether the dashboard label matches the service name."}
+{"time": "00:13:40", "speaker": "Cal", "text": "Cal update: I looked at the old runbook and the diagram is stale. The deployment has not changed since the last release."}
+{"time": "00:13:55", "speaker": "Bea", "text": "Can someone paste the sample payload? The field order is not important, but the units need to be explicit."}
+{"time": "00:14:00", "speaker": "Bea", "text": "The chart includes a weekend batch that will not run during the pilot; please do not size from that peak."}
+{"time": "00:14:10", "speaker": "Noor", "text": "The sample payload uses Celsius. We should record that as a fact and keep the conversion at the edge."}
+{"time": "00:14:25", "speaker": "Cal", "text": "No change from my side. The team is still validating the synthetic workload."}
+{"time": "00:14:30", "speaker": "Noor", "text": "We can bring the error budget discussion to the reliability review. It is outside today’s architecture call."}
+{"time": "00:14:40", "speaker": "Bea", "text": "There is a typo in the dashboard legend, not a service defect. I will fix the legend separately."}
+{"time": "00:14:55", "speaker": "Noor", "text": "Noor update: The staging cluster is shared with the analytics group, so the latency numbers are not representative."}
+{"time": "00:15:10", "speaker": "Cal", "text": "I agree that we should wait for the test results before picking a threshold."}
+{"time": "00:15:25", "speaker": "Bea", "text": "That is useful context, but it does not amount to an agreement to add another component."}
+{"time": "00:15:40", "speaker": "Noor", "text": "Let me read back the current point: we have not decided the retry window yet."}
+{"time": "00:15:55", "speaker": "Cal", "text": "The network team is doing maintenance tonight. Any failure in that window is not part of this design review."}
+{"time": "00:16:10", "speaker": "Bea", "text": "Bea update: The staging run is still going. The first pass spends most of its time warming the local cache, so the graph is noisy."}
+{"time": "00:16:25", "speaker": "Noor", "text": "I checked the logs from Tuesday. There are a few timeouts, but none line up with the data loss report."}
+{"time": "00:16:40", "speaker": "Cal", "text": "Can we leave that as an observation for now? It does not change the interface we are deciding today."}
+{"time": "00:16:55", "speaker": "Bea", "text": "The operations person is joining after their handoff. I sent the notes, but we should not infer agreement from that."}
+{"time": "00:17:10", "speaker": "Noor", "text": "I have a small concern about how this reads in the runbook. The on-call rotation changes next month."}
+{"time": "00:17:25", "speaker": "Cal", "text": "Cal update: We are still waiting on the test environment to finish importing the anonymized dataset."}
+{"time": "00:17:30", "speaker": "Cal", "text": "The first architecture sketch includes a fleet-enrollment service for onboarding sensors."}
+{"time": "00:17:40", "speaker": "Bea", "text": "That number is from the last quarterly report, not a target. Let us keep it in meeting context only."}
+{"time": "00:17:55", "speaker": "Noor", "text": "I do not have a new proposal here. I am checking whether the dashboard label matches the service name."}
+{"time": "00:18:10", "speaker": "Cal", "text": "The chart includes a weekend batch that will not run during the pilot; please do not size from that peak."}
+{"time": "00:18:25", "speaker": "Bea", "text": "We can bring the error budget discussion to the reliability review. It is outside today’s architecture call."}
+{"time": "00:18:40", "speaker": "Noor", "text": "Noor update: I looked at the old runbook and the diagram is stale. The deployment has not changed since the last release."}
+{"time": "00:18:55", "speaker": "Cal", "text": "Can someone paste the sample payload? The field order is not important, but the units need to be explicit."}
+{"time": "00:19:10", "speaker": "Bea", "text": "The sample payload uses Celsius. We should record that as a fact and keep the conversion at the edge."}
+{"time": "00:19:25", "speaker": "Noor", "text": "No change from my side. The team is still validating the synthetic workload."}
+{"time": "00:19:40", "speaker": "Cal", "text": "There is a typo in the dashboard legend, not a service defect. I will fix the legend separately."}
+{"time": "00:19:55", "speaker": "Bea", "text": "Bea update: The staging cluster is shared with the analytics group, so the latency numbers are not representative."}
+{"time": "00:20:10", "speaker": "Noor", "text": "I agree that we should wait for the test results before picking a threshold."}
+{"time": "00:20:25", "speaker": "Cal", "text": "That is useful context, but it does not amount to an agreement to add another component."}
+{"time": "00:20:40", "speaker": "Bea", "text": "Let me read back the current point: we have not decided the retry window yet."}
+{"time": "00:20:55", "speaker": "Noor", "text": "The network team is doing maintenance tonight. Any failure in that window is not part of this design review."}
+{"time": "00:21:10", "speaker": "Cal", "text": "Cal update: The staging run is still going. The first pass spends most of its time warming the local cache, so the graph is noisy."}
+{"time": "00:21:25", "speaker": "Bea", "text": "I checked the logs from Tuesday. There are a few timeouts, but none line up with the data loss report."}
+{"time": "00:21:40", "speaker": "Noor", "text": "Can we leave that as an observation for now? It does not change the interface we are deciding today."}
+{"time": "00:21:55", "speaker": "Cal", "text": "The operations person is joining after their handoff. I sent the notes, but we should not infer agreement from that."}
+{"time": "00:22:10", "speaker": "Bea", "text": "I have a small concern about how this reads in the runbook. The on-call rotation changes next month."}
+{"time": "00:22:25", "speaker": "Noor", "text": "Noor update: We are still waiting on the test environment to finish importing the anonymized dataset."}
+{"time": "00:22:40", "speaker": "Cal", "text": "That number is from the last quarterly report, not a target. Let us keep it in meeting context only."}
+{"time": "00:22:55", "speaker": "Bea", "text": "I do not have a new proposal here. I am checking whether the dashboard label matches the service name."}
+{"time": "00:23:10", "speaker": "Noor", "text": "The chart includes a weekend batch that will not run during the pilot; please do not size from that peak."}
+{"time": "00:23:25", "speaker": "Cal", "text": "We can bring the error budget discussion to the reliability review. It is outside today’s architecture call."}
+{"time": "00:23:40", "speaker": "Bea", "text": "Bea update: I looked at the old runbook and the diagram is stale. The deployment has not changed since the last release."}
+{"time": "00:23:55", "speaker": "Noor", "text": "Can someone paste the sample payload? The field order is not important, but the units need to be explicit."}
+{"time": "00:24:10", "speaker": "Cal", "text": "The sample payload uses Celsius. We should record that as a fact and keep the conversion at the edge."}
+{"time": "00:24:25", "speaker": "Bea", "text": "No change from my side. The team is still validating the synthetic workload."}
+{"time": "00:24:40", "speaker": "Noor", "text": "There is a typo in the dashboard legend, not a service defect. I will fix the legend separately."}
+{"time": "00:24:55", "speaker": "Cal", "text": "Cal update: The staging cluster is shared with the analytics group, so the latency numbers are not representative."}
+{"time": "00:25:10", "speaker": "Bea", "text": "I agree that we should wait for the test results before picking a threshold."}
+{"time": "00:25:25", "speaker": "Noor", "text": "That is useful context, but it does not amount to an agreement to add another component."}
+{"time": "00:25:40", "speaker": "Cal", "text": "Let me read back the current point: we have not decided the retry window yet."}
+{"time": "00:25:55", "speaker": "Bea", "text": "The network team is doing maintenance tonight. Any failure in that window is not part of this design review."}
+{"time": "00:26:10", "speaker": "Noor", "text": "Noor update: The staging run is still going. The first pass spends most of its time warming the local cache, so the graph is noisy."}
+{"time": "00:26:25", "speaker": "Cal", "text": "I checked the logs from Tuesday. There are a few timeouts, but none line up with the data loss report."}
+{"time": "00:26:40", "speaker": "Bea", "text": "Can we leave that as an observation for now? It does not change the interface we are deciding today."}
+{"time": "00:26:55", "speaker": "Noor", "text": "The operations person is joining after their handoff. I sent the notes, but we should not infer agreement from that."}
+{"time": "00:27:10", "speaker": "Cal", "text": "I have a small concern about how this reads in the runbook. The on-call rotation changes next month."}
+{"time": "00:27:25", "speaker": "Bea", "text": "Bea update: We are still waiting on the test environment to finish importing the anonymized dataset."}
+{"time": "00:27:40", "speaker": "Noor", "text": "That number is from the last quarterly report, not a target. Let us keep it in meeting context only."}
+{"time": "00:27:55", "speaker": "Cal", "text": "I do not have a new proposal here. I am checking whether the dashboard label matches the service name."}
+{"time": "00:28:00", "speaker": "Bea", "text": "For reconnect bursts, double the original 12 partitions to 24 after the replay benchmark; accepted for the pilot."}
+{"time": "00:28:10", "speaker": "Bea", "text": "The chart includes a weekend batch that will not run during the pilot; please do not size from that peak."}
+{"time": "00:28:25", "speaker": "Noor", "text": "We can bring the error budget discussion to the reliability review. It is outside today’s architecture call."}
+{"time": "00:28:40", "speaker": "Cal", "text": "Cal update: I looked at the old runbook and the diagram is stale. The deployment has not changed since the last release."}
+{"time": "00:28:55", "speaker": "Bea", "text": "Can someone paste the sample payload? The field order is not important, but the units need to be explicit."}
+{"time": "00:29:10", "speaker": "Noor", "text": "The sample payload uses Celsius. We should record that as a fact and keep the conversion at the edge."}
+{"time": "00:29:25", "speaker": "Cal", "text": "No change from my side. The team is still validating the synthetic workload."}
+{"time": "00:29:40", "speaker": "Bea", "text": "There is a typo in the dashboard legend, not a service defect. I will fix the legend separately."}
+{"time": "00:29:55", "speaker": "Noor", "text": "Noor update: The staging cluster is shared with the analytics group, so the latency numbers are not representative."}
+{"time": "00:30:10", "speaker": "Cal", "text": "I agree that we should wait for the test results before picking a threshold."}
+{"time": "00:30:25", "speaker": "Bea", "text": "That is useful context, but it does not amount to an agreement to add another component."}
+{"time": "00:30:40", "speaker": "Noor", "text": "Let me read back the current point: we have not decided the retry window yet."}
+{"time": "00:30:55", "speaker": "Cal", "text": "The network team is doing maintenance tonight. Any failure in that window is not part of this design review."}
+{"time": "00:31:10", "speaker": "Bea", "text": "Bea update: The staging run is still going. The first pass spends most of its time warming the local cache, so the graph is noisy."}
+{"time": "00:31:25", "speaker": "Noor", "text": "I checked the logs from Tuesday. There are a few timeouts, but none line up with the data loss report."}
+{"time": "00:31:40", "speaker": "Cal", "text": "Can we leave that as an observation for now? It does not change the interface we are deciding today."}
+{"time": "00:31:55", "speaker": "Bea", "text": "The operations person is joining after their handoff. I sent the notes, but we should not infer agreement from that."}
+{"time": "00:32:10", "speaker": "Noor", "text": "I have a small concern about how this reads in the runbook. The on-call rotation changes next month."}
+{"time": "00:32:25", "speaker": "Cal", "text": "Cal update: We are still waiting on the test environment to finish importing the anonymized dataset."}
+{"time": "00:32:40", "speaker": "Bea", "text": "That number is from the last quarterly report, not a target. Let us keep it in meeting context only."}
+{"time": "00:32:55", "speaker": "Noor", "text": "I do not have a new proposal here. I am checking whether the dashboard label matches the service name."}
+{"time": "00:33:10", "speaker": "Cal", "text": "The chart includes a weekend batch that will not run during the pilot; please do not size from that peak."}
+{"time": "00:33:25", "speaker": "Bea", "text": "We can bring the error budget discussion to the reliability review. It is outside today’s architecture call."}
+{"time": "00:33:40", "speaker": "Noor", "text": "Noor update: I looked at the old runbook and the diagram is stale. The deployment has not changed since the last release."}
+{"time": "00:33:55", "speaker": "Cal", "text": "Can someone paste the sample payload? The field order is not important, but the units need to be explicit."}
+{"time": "00:34:10", "speaker": "Bea", "text": "The sample payload uses Celsius. We should record that as a fact and keep the conversion at the edge."}
+{"time": "00:34:25", "speaker": "Noor", "text": "No change from my side. The team is still validating the synthetic workload."}
+{"time": "00:34:40", "speaker": "Cal", "text": "There is a typo in the dashboard legend, not a service defect. I will fix the legend separately."}
+{"time": "00:34:55", "speaker": "Bea", "text": "Bea update: The staging cluster is shared with the analytics group, so the latency numbers are not representative."}
+{"time": "00:35:10", "speaker": "Noor", "text": "I agree that we should wait for the test results before picking a threshold."}
+{"time": "00:35:25", "speaker": "Cal", "text": "That is useful context, but it does not amount to an agreement to add another component."}
+{"time": "00:35:40", "speaker": "Bea", "text": "Let me read back the current point: we have not decided the retry window yet."}
+{"time": "00:35:55", "speaker": "Noor", "text": "The network team is doing maintenance tonight. Any failure in that window is not part of this design review."}
+{"time": "00:36:10", "speaker": "Cal", "text": "Cal update: The staging run is still going. The first pass spends most of its time warming the local cache, so the graph is noisy."}
+{"time": "00:36:25", "speaker": "Bea", "text": "I checked the logs from Tuesday. There are a few timeouts, but none line up with the data loss report."}
+{"time": "00:36:40", "speaker": "Noor", "text": "Can we leave that as an observation for now? It does not change the interface we are deciding today."}
+{"time": "00:36:55", "speaker": "Cal", "text": "The operations person is joining after their handoff. I sent the notes, but we should not infer agreement from that."}
+{"time": "00:37:10", "speaker": "Bea", "text": "I have a small concern about how this reads in the runbook. The on-call rotation changes next month."}
+{"time": "00:37:25", "speaker": "Noor", "text": "Noor update: We are still waiting on the test environment to finish importing the anonymized dataset."}
+{"time": "00:37:40", "speaker": "Cal", "text": "That number is from the last quarterly report, not a target. Let us keep it in meeting context only."}
+{"time": "00:37:55", "speaker": "Bea", "text": "I do not have a new proposal here. I am checking whether the dashboard label matches the service name."}
+{"time": "00:38:10", "speaker": "Noor", "text": "The chart includes a weekend batch that will not run during the pilot; please do not size from that peak."}
+{"time": "00:38:25", "speaker": "Cal", "text": "We can bring the error budget discussion to the reliability review. It is outside today’s architecture call."}
+{"time": "00:38:40", "speaker": "Bea", "text": "Bea update: I looked at the old runbook and the diagram is stale. The deployment has not changed since the last release."}
+{"time": "00:38:55", "speaker": "Noor", "text": "Can someone paste the sample payload? The field order is not important, but the units need to be explicit."}
+{"time": "00:39:10", "speaker": "Cal", "text": "The sample payload uses Celsius. We should record that as a fact and keep the conversion at the edge."}
+{"time": "00:39:25", "speaker": "Bea", "text": "No change from my side. The team is still validating the synthetic workload."}
+{"time": "00:39:40", "speaker": "Noor", "text": "There is a typo in the dashboard legend, not a service defect. I will fix the legend separately."}
+{"time": "00:39:55", "speaker": "Cal", "text": "Cal update: The staging cluster is shared with the analytics group, so the latency numbers are not representative."}
+{"time": "00:40:10", "speaker": "Bea", "text": "I agree that we should wait for the test results before picking a threshold."}
+{"time": "00:40:25", "speaker": "Noor", "text": "That is useful context, but it does not amount to an agreement to add another component."}
+{"time": "00:40:40", "speaker": "Cal", "text": "Let me read back the current point: we have not decided the retry window yet."}
+{"time": "00:40:55", "speaker": "Bea", "text": "The network team is doing maintenance tonight. Any failure in that window is not part of this design review."}
+{"time": "00:41:10", "speaker": "Noor", "text": "Noor update: The staging run is still going. The first pass spends most of its time warming the local cache, so the graph is noisy."}
+{"time": "00:41:25", "speaker": "Cal", "text": "I checked the logs from Tuesday. There are a few timeouts, but none line up with the data loss report."}
+{"time": "00:41:40", "speaker": "Bea", "text": "Can we leave that as an observation for now? It does not change the interface we are deciding today."}
+{"time": "00:41:55", "speaker": "Noor", "text": "The operations person is joining after their handoff. I sent the notes, but we should not infer agreement from that."}
+{"time": "00:42:10", "speaker": "Cal", "text": "I have a small concern about how this reads in the runbook. The on-call rotation changes next month."}
+{"time": "00:42:25", "speaker": "Bea", "text": "Bea update: We are still waiting on the test environment to finish importing the anonymized dataset."}
+{"time": "00:42:40", "speaker": "Noor", "text": "That number is from the last quarterly report, not a target. Let us keep it in meeting context only."}
+{"time": "00:42:55", "speaker": "Cal", "text": "I do not have a new proposal here. I am checking whether the dashboard label matches the service name."}
+{"time": "00:43:00", "speaker": "Noor", "text": "The load test has a long tail. Redis has not helped in the test, so do not add it yet."}
+{"time": "00:43:10", "speaker": "Bea", "text": "The chart includes a weekend batch that will not run during the pilot; please do not size from that peak."}
+{"time": "00:43:25", "speaker": "Noor", "text": "We can bring the error budget discussion to the reliability review. It is outside today’s architecture call."}
+{"time": "00:43:40", "speaker": "Cal", "text": "Cal update: I looked at the old runbook and the diagram is stale. The deployment has not changed since the last release."}
+{"time": "00:43:55", "speaker": "Bea", "text": "Can someone paste the sample payload? The field order is not important, but the units need to be explicit."}
+{"time": "00:44:10", "speaker": "Noor", "text": "The sample payload uses Celsius. We should record that as a fact and keep the conversion at the edge."}
+{"time": "00:44:25", "speaker": "Cal", "text": "No change from my side. The team is still validating the synthetic workload."}
+{"time": "00:44:40", "speaker": "Bea", "text": "There is a typo in the dashboard legend, not a service defect. I will fix the legend separately."}
+{"time": "00:44:55", "speaker": "Noor", "text": "Noor update: The staging cluster is shared with the analytics group, so the latency numbers are not representative."}
+{"time": "00:45:10", "speaker": "Cal", "text": "I agree that we should wait for the test results before picking a threshold."}
+{"time": "00:45:25", "speaker": "Bea", "text": "That is useful context, but it does not amount to an agreement to add another component."}
+{"time": "00:45:40", "speaker": "Noor", "text": "Let me read back the current point: we have not decided the retry window yet."}
+{"time": "00:45:55", "speaker": "Cal", "text": "The network team is doing maintenance tonight. Any failure in that window is not part of this design review."}
+{"time": "00:46:10", "speaker": "Bea", "text": "Bea update: The staging run is still going. The first pass spends most of its time warming the local cache, so the graph is noisy."}
+{"time": "00:46:25", "speaker": "Noor", "text": "I checked the logs from Tuesday. There are a few timeouts, but none line up with the data loss report."}
+{"time": "00:46:40", "speaker": "Cal", "text": "Can we leave that as an observation for now? It does not change the interface we are deciding today."}
+{"time": "00:46:55", "speaker": "Bea", "text": "The operations person is joining after their handoff. I sent the notes, but we should not infer agreement from that."}
+{"time": "00:47:10", "speaker": "Noor", "text": "I have a small concern about how this reads in the runbook. The on-call rotation changes next month."}
+{"time": "00:47:25", "speaker": "Cal", "text": "Cal update: We are still waiting on the test environment to finish importing the anonymized dataset."}
+{"time": "00:47:40", "speaker": "Bea", "text": "That number is from the last quarterly report, not a target. Let us keep it in meeting context only."}
+{"time": "00:47:55", "speaker": "Noor", "text": "I do not have a new proposal here. I am checking whether the dashboard label matches the service name."}
+{"time": "00:48:00", "speaker": "Noor", "text": "We still do not know how metrology wants calibration drift represented in the alert payload. Leave that open."}
+{"time": "00:48:10", "speaker": "Cal", "text": "The chart includes a weekend batch that will not run during the pilot; please do not size from that peak."}
+{"time": "00:48:25", "speaker": "Bea", "text": "We can bring the error budget discussion to the reliability review. It is outside today’s architecture call."}
+{"time": "00:48:30", "speaker": "Bea", "text": "I will ask metrology for the payload contract by next Wednesday."}
+{"time": "00:48:40", "speaker": "Noor", "text": "Noor update: I looked at the old runbook and the diagram is stale. The deployment has not changed since the last release."}
+{"time": "00:48:55", "speaker": "Cal", "text": "Can someone paste the sample payload? The field order is not important, but the units need to be explicit."}
+{"time": "00:49:00", "speaker": "Cal", "text": "I will run reconnect replay comparison against the durable batch writer by Friday."}
+{"time": "00:49:10", "speaker": "Bea", "text": "The sample payload uses Celsius. We should record that as a fact and keep the conversion at the edge."}
+{"time": "00:49:25", "speaker": "Noor", "text": "No change from my side. The team is still validating the synthetic workload."}
+{"time": "00:49:40", "speaker": "Cal", "text": "There is a typo in the dashboard legend, not a service defect. I will fix the legend separately."}
+{"time": "00:49:55", "speaker": "Bea", "text": "Bea update: The staging cluster is shared with the analytics group, so the latency numbers are not representative."}
+{"time": "00:50:00", "speaker": "Noor", "text": "Keep those as follow-ups; neither changes the chosen storage path."}
+{"time": "00:50:10", "speaker": "Noor", "text": "I agree that we should wait for the test results before picking a threshold."}
+{"time": "00:50:25", "speaker": "Cal", "text": "That is useful context, but it does not amount to an agreement to add another component."}
+{"time": "00:50:40", "speaker": "Bea", "text": "Let me read back the current point: we have not decided the retry window yet."}
+{"time": "00:50:55", "speaker": "Noor", "text": "The network team is doing maintenance tonight. Any failure in that window is not part of this design review."}
+{"time": "00:51:10", "speaker": "Cal", "text": "Cal update: The staging run is still going. The first pass spends most of its time warming the local cache, so the graph is noisy."}
+{"time": "00:51:25", "speaker": "Bea", "text": "I checked the logs from Tuesday. There are a few timeouts, but none line up with the data loss report."}
+{"time": "00:51:40", "speaker": "Noor", "text": "Can we leave that as an observation for now? It does not change the interface we are deciding today."}
+{"time": "00:51:55", "speaker": "Cal", "text": "The operations person is joining after their handoff. I sent the notes, but we should not infer agreement from that."}
+{"time": "00:52:00", "speaker": "Cal", "text": "We reviewed the replay measurements: Kafka is not justified for this volume and the team cannot support it. Reverse the accepted Kafka choice; the ingest API writes to TimescaleDB through a durable local batch writer."}
+{"time": "00:52:10", "speaker": "Bea", "text": "I have a small concern about how this reads in the runbook. The on-call rotation changes next month."}
+{"time": "00:52:25", "speaker": "Noor", "text": "Noor update: We are still waiting on the test environment to finish importing the anonymized dataset."}
+{"time": "00:52:40", "speaker": "Cal", "text": "That number is from the last quarterly report, not a target. Let us keep it in meeting context only."}
+{"time": "00:52:55", "speaker": "Bea", "text": "I do not have a new proposal here. I am checking whether the dashboard label matches the service name."}
+{"time": "00:53:10", "speaker": "Noor", "text": "The chart includes a weekend batch that will not run during the pilot; please do not size from that peak."}
+{"time": "00:54:00", "speaker": "Bea", "text": "Agreed. The current design removes Kafka and the consumer; keep TimescaleDB and the durable batch writer."}
+{"time": "00:57:00", "speaker": "Noor", "text": "We also no longer need the fleet-enrollment service; provisioning remains in the existing device registry."}
+{"time": "00:59:00", "speaker": "Cal", "text": "Correct, remove fleet enrollment from the target architecture."}
+{"time": "01:00:00", "speaker": "Noor", "text": "The session is at an hour; closing."}
+{"time": "01:00:00", "speaker": "Noor", "text": "We have covered the remaining points. Closing the review."}

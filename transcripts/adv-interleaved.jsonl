@@ -1,0 +1,77 @@
+{"time": "00:00:05", "speaker": "Eli", "text": "Reviewing document rendering for engineering notebooks. Topics: tenancy, exports, deployment; we will bounce around."}
+{"time": "00:00:29", "speaker": "Sana", "text": "Need 99.9 percent monthly availability and exports under 30 seconds for a 200-page notebook."}
+{"time": "00:00:51", "speaker": "Victor", "text": "Current is one shared database. We are designing target, not documenting that as target."}
+{"time": "00:01:14", "speaker": "Eli", "text": "Tenancy option one: separate schema per organization."}
+{"time": "00:01:32", "speaker": "Sana", "text": "Option two is shared tables with organization_id on every row and database row-level security."}
+{"time": "00:01:53", "speaker": "Victor", "text": "Second option is easier migrations if every query uses RLS."}
+{"time": "00:02:10", "speaker": "Eli", "text": "Tentatively shared tables plus RLS, security review required."}
+{"time": "00:02:31", "speaker": "Sana", "text": "Exports use a worker queue so HTTP does not hold PDF render open."}
+{"time": "00:02:48", "speaker": "Victor", "text": "Could use existing Redis queue, but it is best effort."}
+{"time": "00:03:02", "speaker": "Eli", "text": "Not Redis; durable jobs matter. Existing RabbitMQ is operated by platform."}
+{"time": "00:03:24", "speaker": "Sana", "text": "Agreed: RabbitMQ queue, workers render PDF into object storage, API returns job id."}
+{"time": "00:03:47", "speaker": "Victor", "text": "Link expires after 24 hours?"}
+{"time": "00:03:51", "speaker": "Sana", "text": "Yes, signed download URL valid 24 hours. File retained seven days for retry."}
+{"time": "00:04:16", "speaker": "Eli", "text": "Object store is S3-compatible in each region."}
+{"time": "00:04:35", "speaker": "Victor", "text": "Deployment, workers run in Kubernetes?"}
+{"time": "00:04:40", "speaker": "Sana", "text": "Yes, existing Kubernetes, separate worker deployment from API."}
+{"time": "00:04:58", "speaker": "Eli", "text": "Back to tenancy. Does RLS cover background workers too?"}
+{"time": "00:05:06", "speaker": "Victor", "text": "Only if worker sets org context from durable job before reading notebook rows."}
+{"time": "00:05:21", "speaker": "Sana", "text": "That one, shared-table option, needs org context enforced in each job. I will write threat model."}
+{"time": "00:05:43", "speaker": "Eli", "text": "Tentative pending review. Sana owns threat model by next Wednesday."}
+{"time": "00:06:05", "speaker": "Victor", "text": "Backups: daily database snapshot plus WAL archive."}
+{"time": "00:06:18", "speaker": "Sana", "text": "RPO one hour, recovery time four hours."}
+{"time": "00:06:33", "speaker": "Eli", "text": "Accepted. Encrypt snapshots and test restore quarterly."}
+{"time": "00:06:54", "speaker": "Victor", "text": "Could export worker read from replica?"}
+{"time": "00:07:00", "speaker": "Sana", "text": "Maybe, but replica lag may omit fresh edits."}
+{"time": "00:07:16", "speaker": "Eli", "text": "Keep reads on primary for now; no replica decision."}
+{"time": "00:07:33", "speaker": "Victor", "text": "For queue, split by organization?"}
+{"time": "00:07:40", "speaker": "Sana", "text": "No, one durable queue, each message carries org and notebook IDs."}
+{"time": "00:07:53", "speaker": "Eli", "text": "Accepted one queue, fair scheduling avoids one org starving others."}
+{"time": "00:08:14", "speaker": "Victor", "text": "Mixing exports and tenancy again. Auth is not ready."}
+{"time": "00:08:22", "speaker": "Eli", "text": "Identity provider migration is deferred to next meeting; do not decide today."}
+{"time": "00:08:40", "speaker": "Sana", "text": "Current export auth uses existing session tokens, no change."}
+{"time": "00:08:56", "speaker": "Victor", "text": "Should diagram show identity provider as external dependency?"}
+{"time": "00:09:02", "speaker": "Eli", "text": "No, auth migration is deferred and current auth unchanged, keep topic out of target diagram."}
+{"time": "00:09:20", "speaker": "Sana", "text": "Wait, export link can be forwarded. Require user auth on download; signed URL alone is not enough."}
+{"time": "00:09:34", "speaker": "Victor", "text": "API validates session then streams from object storage."}
+{"time": "00:09:50", "speaker": "Eli", "text": "Accepted: 24-hour link identifies export, download requires auth. No public bearer links."}
+{"time": "00:10:14", "speaker": "Sana", "text": "Back to tenancy. Security review says RLS policies are hard to audit across every table."}
+{"time": "00:10:27", "speaker": "Victor", "text": "Separate schema gives clearer boundaries but migrations slower."}
+{"time": "00:10:42", "speaker": "Eli", "text": "Stop calling shared tables tentative. Choose schema per org for v1, with migration tooling."}
+{"time": "00:10:59", "speaker": "Sana", "text": "Agreed. Separate schema per org. Shared rows plus RLS rejected due to policy coverage risk."}
+{"time": "00:11:22", "speaker": "Victor", "text": "Does that alter queue design?"}
+{"time": "00:11:26", "speaker": "Sana", "text": "No, job carries org id, worker selects schema from it."}
+{"time": "00:11:40", "speaker": "Eli", "text": "Update component note, same worker pool, isolated schemas."}
+{"time": "00:11:58", "speaker": "Victor", "text": "Backups per schema or whole database?"}
+{"time": "00:12:03", "speaker": "Sana", "text": "Whole regional database snapshots, restore tooling can select schema later."}
+{"time": "00:12:17", "speaker": "Eli", "text": "Accepted, whole DB snapshots and WAL. Quarterly restore test remains."}
+{"time": "00:12:35", "speaker": "Victor", "text": "S3 retention seven days, signed link 24 hours. Conflict?"}
+{"time": "00:12:41", "speaker": "Sana", "text": "No, link validity and object retention differ."}
+{"time": "00:12:56", "speaker": "Eli", "text": "Exactly."}
+{"time": "00:13:11", "speaker": "Victor", "text": "Export worker concurrency?"}
+{"time": "00:13:17", "speaker": "Sana", "text": "Start at 12 per region, tune after load test."}
+{"time": "00:13:29", "speaker": "Eli", "text": "Tentative cap 12 workers pending benchmark."}
+{"time": "00:13:44", "speaker": "Victor", "text": "No need to add autoscaler now."}
+{"time": "00:14:02", "speaker": "Sana", "text": "I own threat model next Wednesday. Victor, test restore?"}
+{"time": "00:14:12", "speaker": "Victor", "text": "I will document restore runbook by Friday."}
+{"time": "00:14:26", "speaker": "Eli", "text": "I own export load test by next Tuesday."}
+{"time": "00:14:40", "speaker": "Sana", "text": "I can do benchmark instead; Eli has migration review."}
+{"time": "00:14:50", "speaker": "Eli", "text": "Okay, Sana owns export load test next Tuesday; I own migration review Friday."}
+{"time": "00:15:09", "speaker": "Victor", "text": "I will not take queue fairness instrumentation this sprint."}
+{"time": "00:15:17", "speaker": "Eli", "text": "No action assigned for that now."}
+{"time": "00:15:32", "speaker": "Sana", "text": "Identity provider choice deferred to next meeting, no owner yet."}
+{"time": "00:15:46", "speaker": "Eli", "text": "Yes, parked, no decision."}
+{"time": "00:16:00", "speaker": "Victor", "text": "Anything else on backups?"}
+{"time": "00:16:06", "speaker": "Sana", "text": "Restore point one hour, recovery four. Quarterly test."}
+{"time": "00:17:08", "speaker": "Sana", "text": "I checked export failure behavior: failed render jobs stay in RabbitMQ for three retries, then move to dead-letter queue."}
+{"time": "00:18:02", "speaker": "Eli", "text": "Agreed, three retries and dead-letter queue, alert on-call. Still one queue setup, not a new service."}
+{"time": "00:19:10", "speaker": "Victor", "text": "Can worker use same schema migration tool as API?"}
+{"time": "00:19:15", "speaker": "Sana", "text": "Yes, same versioned migration package, deployment order is API then workers."}
+{"time": "00:20:14", "speaker": "Eli", "text": "Auth migration stays deferred; export auth does not change identity provider."}
+{"time": "00:21:03", "speaker": "Victor", "text": "Backup restore test should include selecting one organization schema, not just full database."}
+{"time": "00:22:10", "speaker": "Sana", "text": "Agreed, Victor add that to Friday runbook."}
+{"time": "00:23:20", "speaker": "Eli", "text": "Sana owns load test next Tuesday and threat model next Wednesday."}
+{"time": "00:24:45", "speaker": "Victor", "text": "We can decide autoscaling after benchmark; 12 remains tentative."}
+{"time": "00:26:30", "speaker": "Eli", "text": "No other decision. Identity provider remains for next meeting."}
+{"time": "00:28:20", "speaker": "Sana", "text": "Export links require auth even when signed identifier is forwarded."}
+{"time": "00:30:00", "speaker": "Eli", "text": "Closing the longer review."}

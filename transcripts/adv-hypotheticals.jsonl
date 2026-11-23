@@ -1,0 +1,60 @@
+{"time": "00:00:04", "speaker": "Tess", "text": "Review of lab sample ingestion. Technicians scan tubes into a desktop station."}
+{"time": "00:00:36", "speaker": "Jun", "text": "Peak is 120 samples a minute per lab, up to 30 labs. Labels stay traceable to the source instrument."}
+{"time": "00:01:05", "speaker": "Tess", "text": "Does the current station work offline?"}
+{"time": "00:01:09", "speaker": "Ravi", "text": "Yes, queues scans locally for four hours. That is current behavior, not a new feature request."}
+{"time": "00:01:28", "speaker": "Tess", "text": "New requirement: accepted scans reach the lab worklist in under two seconds on the LAN."}
+{"time": "00:01:48", "speaker": "Mina", "text": "Duplicate scans must not create duplicate samples."}
+{"time": "00:02:08", "speaker": "Jun", "text": "Use a client UUID per scan as the idempotency key."}
+{"time": "00:02:27", "speaker": "Ravi", "text": "Accepted. UUID stays stable on retry; server rejects duplicate key."}
+{"time": "00:02:49", "speaker": "Mina", "text": "If we were Netflix, we would need global edge ingest and a data lake for every click."}
+{"time": "00:03:00", "speaker": "Tess", "text": "That is an analogy, not a proposal. We have a few labs and regulated records."}
+{"time": "00:03:22", "speaker": "Ravi", "text": "Imagine a graph database, just to illustrate a flexible schema. I am not recommending it."}
+{"time": "00:03:35", "speaker": "Jun", "text": "We do not need a graph. Relational tables already cover sample, instrument, and assay."}
+{"time": "00:03:51", "speaker": "Mina", "text": "Sure, let us just rewrite it in Rust, that will definitely fix the barcode printer."}
+{"time": "00:03:58", "speaker": "Tess", "text": "Sarcasm noted. No rewrite decision."}
+{"time": "00:04:17", "speaker": "Ravi", "text": "Transport from station to lab service: HTTPS batch endpoint over facility network."}
+{"time": "00:04:37", "speaker": "Jun", "text": "Could use MQTT since instruments already speak it."}
+{"time": "00:04:43", "speaker": "Ravi", "text": "Those instruments talk to station, not our service. Station can post HTTPS."}
+{"time": "00:05:01", "speaker": "Tess", "text": "Agreed, HTTPS batch API, station is the client."}
+{"time": "00:05:23", "speaker": "Mina", "text": "Should batch endpoint be synchronous?"}
+{"time": "00:05:27", "speaker": "Jun", "text": "Yes, return accepted IDs synchronously; persistence is complete before 200."}
+{"time": "00:05:42", "speaker": "Mina", "text": "Okay, that answers it. Not an open question."}
+{"time": "00:06:03", "speaker": "Ravi", "text": "Managed Postgres in each region, encrypted backups."}
+{"time": "00:06:21", "speaker": "Tess", "text": "Could be one central database?"}
+{"time": "00:06:26", "speaker": "Jun", "text": "Latency and facility isolation argue regional. Records stay in assigned region."}
+{"time": "00:06:44", "speaker": "Tess", "text": "Accepted, one regional Postgres per lab region."}
+{"time": "00:07:08", "speaker": "Mina", "text": "Maybe add Redis for worklist?"}
+{"time": "00:07:18", "speaker": "Ravi", "text": "Not needed for measured load. Postgres index covers it."}
+{"time": "00:07:32", "speaker": "Tess", "text": "Redis is only a suggestion, no cache decision."}
+{"time": "00:07:53", "speaker": "Jun", "text": "Audit retention is seven years. Raw instrument payloads retained; normalized records queryable."}
+{"time": "00:08:12", "speaker": "Mina", "text": "Could archive raw payloads to object storage after 90 days?"}
+{"time": "00:08:20", "speaker": "Tess", "text": "Real proposal, but not deciding storage tier today. Leave open."}
+{"time": "00:08:37", "speaker": "Jun", "text": "I will get compliance retention and retrieval requirements by next Thursday."}
+{"time": "00:08:49", "speaker": "Tess", "text": "Jun owns that follow-up."}
+{"time": "00:09:08", "speaker": "Ravi", "text": "We also need an event bus. Maybe Kafka, unless the load test fails."}
+{"time": "00:09:20", "speaker": "Tess", "text": "Plan on Kafka unless the load test fails; mark tentative until test."}
+{"time": "00:09:42", "speaker": "Mina", "text": "I would start with direct Postgres writes and add a bus only if needed."}
+{"time": "00:10:03", "speaker": "Jun", "text": "Endpoint can write Postgres and publish accepted-scan events to existing lab Kafka."}
+{"time": "00:10:19", "speaker": "Tess", "text": "Tentative shape, still gated by load test."}
+{"time": "00:10:38", "speaker": "Ravi", "text": "Fine, Kafka is probably okay."}
+{"time": "00:11:02", "speaker": "Mina", "text": "Hold on, no load test for fanout and platform cannot support Kafka on lab network this quarter."}
+{"time": "00:11:18", "speaker": "Mina", "text": "I object to calling Kafka the plan. Keep it undecided until platform confirms support; direct writes remain baseline."}
+{"time": "00:11:34", "speaker": "Tess", "text": "Agreed, Kafka is not accepted. Open question whether supported event bus is available after load test."}
+{"time": "00:11:55", "speaker": "Jun", "text": "I will ask platform about supported lab event transport by Friday."}
+{"time": "00:12:14", "speaker": "Ravi", "text": "Worklist updates can poll every second?"}
+{"time": "00:12:21", "speaker": "Mina", "text": "That is a lot of queries. Use server-sent events?"}
+{"time": "00:12:36", "speaker": "Tess", "text": "Keep v1 simple, manual refresh plus 15 second poll. Accepted."}
+{"time": "00:12:54", "speaker": "Jun", "text": "Then no live event stream in diagram."}
+{"time": "00:13:13", "speaker": "Ravi", "text": "Deploy with Kubernetes?"}
+{"time": "00:13:19", "speaker": "Tess", "text": "Existing platform runs services on Kubernetes, no new platform decision."}
+{"time": "00:13:41", "speaker": "Mina", "text": "Jun compliance retention next Thursday; Jun platform transport by Friday."}
+{"time": "00:14:00", "speaker": "Jun", "text": "Yes, both."}
+{"time": "00:14:12", "speaker": "Tess", "text": "No action for the graph database example."}
+{"time": "00:14:29", "speaker": "Ravi", "text": "Printer jammed again, sorry, not part of this design."}
+{"time": "00:14:41", "speaker": "Tess", "text": "Correct. Anything else unresolved beyond storage tier and Kafka support?"}
+{"time": "00:14:54", "speaker": "Mina", "text": "No, and under-two-second LAN target is accepted."}
+{"time": "00:16:12", "speaker": "Tess", "text": "Regional database failover stays within assigned region; no cross-region copy."}
+{"time": "00:17:04", "speaker": "Jun", "text": "Retention policy is seven years for audit records; operations can retrieve archived raw payloads if compliance asks."}
+{"time": "00:18:13", "speaker": "Ravi", "text": "We have not decided object storage transition. Jun still has to get required retrieval time."}
+{"time": "00:19:22", "speaker": "Tess", "text": "Correct, keep storage tier open. The 15-second worklist poll stays accepted."}
+{"time": "00:20:00", "speaker": "Jun", "text": "Closing, I will bring platform support and retention answers back."}

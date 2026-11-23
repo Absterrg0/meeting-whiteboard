@@ -1,0 +1,214 @@
+{
+  "checks": [
+    {
+      "id": "freshness",
+      "type": "llm",
+      "desc": "Five-minute target",
+      "expect": "Road edits appear in regional tiles within five minutes."
+    },
+    {
+      "id": "scale",
+      "type": "llm",
+      "desc": "Scale facts",
+      "expect": "Context includes 18 million road segments and about 40,000 edits per day."
+    },
+    {
+      "id": "source-final",
+      "type": "llm",
+      "desc": "Journal source",
+      "expect": "Final design reads changes from the existing Postgres change journal in batches using a durable cursor."
+    },
+    {
+      "id": "kafka-reversed",
+      "type": "llm",
+      "desc": "Kafka late reversal",
+      "expect": "Kafka was accepted early and reversed around minute 100 because fanout complicated rebuild ordering; no Kafka in current design."
+    },
+    {
+      "id": "worker",
+      "type": "llm",
+      "desc": "Rust worker retained",
+      "expect": "Rust tile worker remains accepted and builds versioned bundles."
+    },
+    {
+      "id": "api",
+      "type": "llm",
+      "desc": "Serving API",
+      "expect": "Go tile API serves bundles by region and zoom."
+    },
+    {
+      "id": "storage",
+      "type": "llm",
+      "desc": "Object storage",
+      "expect": "Versioned tile bundles are stored in object storage."
+    },
+    {
+      "id": "shards",
+      "type": "llm",
+      "desc": "Shards revised",
+      "expect": "Current shard count is 8 per region after cutting the 16-shard starting point in half."
+    },
+    {
+      "id": "retention",
+      "type": "llm",
+      "desc": "Retention revised",
+      "expect": "Previous bundles retained 14 days current; former 30 days only history."
+    },
+    {
+      "id": "edge-cache",
+      "type": "llm",
+      "desc": "Cache removed",
+      "expect": "Edge cache is removed due to low measured hit rate and invalidation cost."
+    },
+    {
+      "id": "diff-service",
+      "type": "llm",
+      "desc": "Temporary component removed",
+      "expect": "Bundle-diff service is removed; worker emits compact bundle directly."
+    },
+    {
+      "id": "open-download",
+      "type": "llm",
+      "desc": "Partial download open",
+      "expect": "Partial-region download protocol remains an open question."
+    },
+    {
+      "id": "open-autoscale",
+      "type": "llm",
+      "desc": "Autoscaling open",
+      "expect": "Worker autoscaling is undecided/open, not accepted."
+    },
+    {
+      "id": "no-old-shards",
+      "type": "llm",
+      "desc": "No old shard value current",
+      "expect": "16 shard starting point does not remain in current doc."
+    },
+    {
+      "id": "no-old-retention",
+      "type": "llm",
+      "desc": "No old 30 day current",
+      "expect": "30-day retention does not remain in current design."
+    },
+    {
+      "id": "reasons",
+      "type": "llm",
+      "desc": "Reasons captured",
+      "expect": "Kafka reversal, cache removal, and shard/retention revisions have reasons in history."
+    },
+    {
+      "id": "smalltalk",
+      "type": "llm",
+      "desc": "Tangents excluded",
+      "expect": "Shared cluster noise, dashboard legend, and meeting logistics are not architecture items."
+    },
+    {
+      "id": "no-invent",
+      "type": "llm",
+      "desc": "No invented components",
+      "expect": "Final architecture is limited to Postgres journal, Rust worker, object storage, Go tile API, and clients."
+    },
+    {
+      "id": "diag-kafka",
+      "type": "diagram_excludes",
+      "desc": "Kafka absent",
+      "pattern": "kafka"
+    },
+    {
+      "id": "diag-cache",
+      "type": "diagram_excludes",
+      "desc": "Edge cache absent",
+      "pattern": "edge cache|cdn"
+    },
+    {
+      "id": "diag-diff",
+      "type": "diagram_excludes",
+      "desc": "Diff service absent",
+      "pattern": "diff service"
+    },
+    {
+      "id": "diag-journal",
+      "type": "diagram_includes",
+      "desc": "Postgres journal shown",
+      "pattern": "postgres|journal"
+    },
+    {
+      "id": "diag-worker",
+      "type": "diagram_includes",
+      "desc": "Rust worker shown",
+      "pattern": "worker"
+    },
+    {
+      "id": "diag-api",
+      "type": "diagram_includes",
+      "desc": "Go API shown",
+      "pattern": "tile api"
+    },
+    {
+      "id": "doc8",
+      "type": "doc_includes",
+      "desc": "Eight shards current",
+      "pattern": "\\b8 shards?\\b|eight shards?",
+      "sections": "current"
+    },
+    {
+      "id": "doc16",
+      "type": "doc_excludes",
+      "desc": "Old sixteen shards absent current",
+      "pattern": "\\b16 shards?\\b|sixteen shards?",
+      "sections": "current"
+    },
+    {
+      "id": "doc14",
+      "type": "doc_includes",
+      "desc": "14-day retention current",
+      "pattern": "\\b14 days?\\b|fourteen days?",
+      "sections": "current"
+    },
+    {
+      "id": "doc30",
+      "type": "doc_excludes",
+      "desc": "Old 30-day retention absent current",
+      "pattern": "\\b30 days?\\b|thirty days?",
+      "sections": "current"
+    },
+    {
+      "id": "kafka-log",
+      "type": "doc_includes",
+      "desc": "Kafka reversal in log",
+      "pattern": "kafka",
+      "sections": "all"
+    },
+    {
+      "id": "open-partial",
+      "type": "doc_includes",
+      "desc": "Partial download remains open",
+      "pattern": "partial.region|partial region",
+      "sections": "current"
+    },
+    {
+      "id": "format-action",
+      "type": "llm",
+      "desc": "Bundle format action",
+      "expect": "Anika owns publishing bundle format examples by next Thursday."
+    },
+    {
+      "id": "replay-action",
+      "type": "llm",
+      "desc": "Regional replay action",
+      "expect": "Mateo owns regional replay test due Friday."
+    },
+    {
+      "id": "mobile-action",
+      "type": "llm",
+      "desc": "Mobile requirements action",
+      "expect": "Sora checks with mobile team about partial-region download requirements by next Tuesday."
+    },
+    {
+      "id": "autoscale-declined",
+      "type": "llm",
+      "desc": "Autoscaling action declined",
+      "expect": "Dev declines worker autoscaling benchmark; autoscaling stays open without an owner."
+    }
+  ]
+}

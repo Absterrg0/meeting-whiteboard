@@ -1,0 +1,152 @@
+{
+  "checks": [
+    {
+      "id": "req-lan",
+      "type": "llm",
+      "desc": "LAN freshness",
+      "expect": "Accepted scans appear in the lab worklist within two seconds on the LAN."
+    },
+    {
+      "id": "req-dedupe",
+      "type": "llm",
+      "desc": "Idempotent scans",
+      "expect": "Each scan has a stable client UUID used as idempotency key; retries cannot create duplicate samples."
+    },
+    {
+      "id": "https",
+      "type": "llm",
+      "desc": "HTTPS transport",
+      "expect": "Station posts batches to HTTPS API and receives accepted IDs synchronously after persistence."
+    },
+    {
+      "id": "pg",
+      "type": "llm",
+      "desc": "Regional database",
+      "expect": "Each lab region uses managed Postgres with encrypted backups and records stay in assigned region."
+    },
+    {
+      "id": "retention",
+      "type": "llm",
+      "desc": "Audit retention",
+      "expect": "Seven-year audit retention applies; normalized records are queryable. The 90-day raw payload archive tier was not decided."
+    },
+    {
+      "id": "archive-open",
+      "type": "llm",
+      "desc": "Archive tier open",
+      "expect": "Whether raw payloads move to object storage after 90 days is open; Jun owns compliance retrieval/retention follow-up due next Thursday."
+    },
+    {
+      "id": "kafka-open",
+      "type": "llm",
+      "desc": "Conditional Kafka later objected to",
+      "expect": "Kafka was tentative only if load test passes, then explicitly objected to because lab platform cannot support it. Final state leaves event transport open, not accepted."
+    },
+    {
+      "id": "platform-action",
+      "type": "llm",
+      "desc": "Platform action",
+      "expect": "Jun checks supported lab event transport by Friday."
+    },
+    {
+      "id": "poll",
+      "type": "llm",
+      "desc": "Worklist refresh",
+      "expect": "Accepted v1 behavior is manual refresh plus 15-second polling; no live event stream."
+    },
+    {
+      "id": "analogy",
+      "type": "llm",
+      "desc": "Netflix analogy",
+      "expect": "Global edge ingest and data lake were analogy only, not adopted or tentative."
+    },
+    {
+      "id": "graph",
+      "type": "llm",
+      "desc": "Graph example",
+      "expect": "Graph database was explicitly illustrative, not a proposal or decision."
+    },
+    {
+      "id": "rust",
+      "type": "llm",
+      "desc": "Sarcasm",
+      "expect": "Sarcastic Rust rewrite is not captured as an accepted decision."
+    },
+    {
+      "id": "answered",
+      "type": "llm",
+      "desc": "Answered question",
+      "expect": "Synchronous endpoint question was answered immediately and is not left open."
+    },
+    {
+      "id": "printer",
+      "type": "llm",
+      "desc": "Printer tangent",
+      "expect": "Printer jam is not a design item."
+    },
+    {
+      "id": "k8s",
+      "type": "llm",
+      "desc": "Existing Kubernetes",
+      "expect": "Kubernetes is existing platform context, not a new platform component decision."
+    },
+    {
+      "id": "pgdiag",
+      "type": "diagram_includes",
+      "desc": "Postgres shown",
+      "pattern": "postgres"
+    },
+    {
+      "id": "httpsdiag",
+      "type": "diagram_includes",
+      "desc": "HTTPS API shown",
+      "pattern": "https|batch api"
+    },
+    {
+      "id": "kafkadiag",
+      "type": "diagram_excludes",
+      "desc": "Kafka not active",
+      "pattern": "kafka"
+    },
+    {
+      "id": "redisdiag",
+      "type": "diagram_excludes",
+      "desc": "Redis not active",
+      "pattern": "redis"
+    },
+    {
+      "id": "graphdiag",
+      "type": "diagram_excludes",
+      "desc": "No graph DB",
+      "pattern": "graph"
+    },
+    {
+      "id": "kafkalog",
+      "type": "doc_includes",
+      "desc": "Kafka debate retained in log",
+      "pattern": "kafka",
+      "sections": "all"
+    },
+    {
+      "id": "netflixdoc",
+      "type": "doc_excludes",
+      "desc": "Netflix analogy omitted",
+      "pattern": "netflix",
+      "sections": "all"
+    },
+    {
+      "id": "rustdoc",
+      "type": "doc_excludes",
+      "desc": "Rust sarcasm omitted",
+      "pattern": "rewrite it in rust|rust rewrite",
+      "sections": "all"
+    },
+    {
+      "id": "polldoc",
+      "type": "doc_includes",
+      "desc": "15-second poll current",
+      "pattern": "\\b15 seconds?\\b",
+      "sections": "current"
+    }
+  ]
+}

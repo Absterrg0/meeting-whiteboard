@@ -1,0 +1,152 @@
+{
+  "checks": [
+    {
+      "id": "req-latency",
+      "type": "llm",
+      "desc": "Freshness requirement",
+      "expect": "The accepted target is excursion visibility within 30 seconds while retaining device timestamp and calibration ID."
+    },
+    {
+      "id": "req-buffer",
+      "type": "llm",
+      "desc": "Gateway buffer",
+      "expect": "Gateways buffer eight hours during disconnection."
+    },
+    {
+      "id": "scale-fact",
+      "type": "llm",
+      "desc": "Scale fact",
+      "expect": "Context records 6,000 sensors and burst load around 900 readings per second."
+    },
+    {
+      "id": "late-kafka-reverse",
+      "type": "llm",
+      "desc": "Late reversal",
+      "expect": "Kafka was accepted earlier but later reversed because volume does not justify it and the team cannot support it; final design uses durable local batch writer to TimescaleDB, without Kafka/consumer."
+    },
+    {
+      "id": "partitions-final",
+      "type": "llm",
+      "desc": "Partition count",
+      "expect": "The accepted pilot value is 24 partitions after doubling the original 12; current state must not retain 12."
+    },
+    {
+      "id": "redis",
+      "type": "llm",
+      "desc": "Redis not selected",
+      "expect": "Redis remained optional and was explicitly not added after testing."
+    },
+    {
+      "id": "enrollment-removed",
+      "type": "llm",
+      "desc": "Enrollment service removed",
+      "expect": "Fleet-enrollment service was introduced early then removed; existing device registry remains."
+    },
+    {
+      "id": "api",
+      "type": "llm",
+      "desc": "Ingest API",
+      "expect": "HTTPS depot gateway traffic enters a validating ingest API."
+    },
+    {
+      "id": "timescale",
+      "type": "llm",
+      "desc": "Timescale target",
+      "expect": "TimescaleDB stores latest sensor state and remains in final architecture."
+    },
+    {
+      "id": "identity",
+      "type": "llm",
+      "desc": "Device registry",
+      "expect": "Existing device registry owns provisioning; no separate fleet-enrollment service in final design."
+    },
+    {
+      "id": "decision-log",
+      "type": "llm",
+      "desc": "History retained",
+      "expect": "Superseded Kafka and removed enrollment appear in history/log with reasons."
+    },
+    {
+      "id": "smalltalk",
+      "type": "llm",
+      "desc": "Tangent omitted",
+      "expect": "Dashboard legend typo, shared cluster caveat, and meeting logistics are not design decisions."
+    },
+    {
+      "id": "no-invent",
+      "type": "llm",
+      "desc": "No invented components",
+      "expect": "Only gateway, ingest API, durable batch writer, TimescaleDB, and existing device registry are shown as target components."
+    },
+    {
+      "id": "kafka-diag",
+      "type": "diagram_excludes",
+      "desc": "Kafka absent final",
+      "pattern": "kafka"
+    },
+    {
+      "id": "redis-diag",
+      "type": "diagram_excludes",
+      "desc": "Redis absent",
+      "pattern": "redis"
+    },
+    {
+      "id": "ts-diag",
+      "type": "diagram_includes",
+      "desc": "Timescale present",
+      "pattern": "timescale"
+    },
+    {
+      "id": "writer-diag",
+      "type": "diagram_includes",
+      "desc": "Batch writer present",
+      "pattern": "batch writer|writer"
+    },
+    {
+      "id": "enroll-diag",
+      "type": "diagram_excludes",
+      "desc": "Enrollment service removed",
+      "pattern": "enrollment"
+    },
+    {
+      "id": "24-doc",
+      "type": "doc_includes",
+      "desc": "24 partitions current",
+      "pattern": "\\b24 partitions?\\b",
+      "sections": "current"
+    },
+    {
+      "id": "12-doc",
+      "type": "doc_excludes",
+      "desc": "Old 12 absent current",
+      "pattern": "\\b12 partitions?\\b",
+      "sections": "current"
+    },
+    {
+      "id": "kafka-log",
+      "type": "doc_includes",
+      "desc": "Kafka history retained",
+      "pattern": "kafka",
+      "sections": "all"
+    },
+    {
+      "id": "no-legend",
+      "type": "doc_excludes",
+      "desc": "No dashboard typo tangent",
+      "pattern": "legend typo",
+      "sections": "all"
+    },
+    {
+      "id": "calibration-open",
+      "type": "llm",
+      "desc": "Calibration payload remains open",
+      "expect": "How to represent calibration drift in alert payload remains an open question; Bea owns asking metrology for payload contract by next Wednesday."
+    },
+    {
+      "id": "replay-action",
+      "type": "llm",
+      "desc": "Reconnect replay action",
+      "expect": "Cal owns reconnect replay comparison against durable batch writer, due Friday."
+    }
+  ]
+}

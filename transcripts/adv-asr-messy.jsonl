@@ -1,0 +1,72 @@
+{"time": "00:00:06", "speaker": "Mara", "text": "uh can we start, this is the telemetry path review for the kiln fleet, the gateway keeps raw readings today"}
+{"time": "00:00:29", "speaker": "Ivo", "text": "numbers are somewhere, like forty eight hundred active kilns across depots"}
+{"time": "00:00:47", "speaker": "Nisha", "text": "and the hot path is temperature and pressure, not camera frames"}
+{"time": "00:01:11", "speaker": "Mara", "text": "target is a reading visible in the operator console within five seconds, alarm path faster if we can"}
+{"time": "00:01:39", "speaker": "Pavel", "text": "thought we said ten seconds last week"}
+{"time": "00:01:52", "speaker": "Mara", "text": "that was old dashboard, five is new requirement because safety times response"}
+{"time": "00:02:08", "speaker": "Ivo", "text": "radios are lora wan, sorry lower one in my notes, LoRaWAN, and then a bridge in each depot"}
+{"time": "00:02:27", "speaker": "Nisha", "text": "yes LoRaWAN. eighty percent of depots have intermittent backhaul, bridge buffers locally"}
+{"time": "00:02:55", "speaker": "Pavel", "text": "what about camera clips"}
+{"time": "00:03:05", "speaker": "Mara", "text": "out of scope for this pipeline, those stay on inspection system"}
+{"time": "00:03:26", "speaker": "Ivo", "text": "we need about six hours buffer at current volume, bridge has sixteen gigs free"}
+{"time": "00:03:53", "speaker": "Nisha", "text": "I would do MQTT from bridge to cloud ingest, one topic per depot, TLS"}
+{"time": "00:04:14", "speaker": "Mara", "text": "proposal, does broker need to be ours or managed"}
+{"time": "00:04:29", "speaker": "Pavel", "text": "we have Mosquitto in lab but nobody wants to own clusters"}
+{"time": "00:04:51", "speaker": "Nisha", "text": "managed broker then. AWS IoT Core is approved and speaks MQTT"}
+{"time": "00:05:12", "speaker": "Ivo", "text": "fine use IoT Core, bridge store-and-forward needs message ids or replay duplicates alarms"}
+{"time": "00:05:41", "speaker": "Mara", "text": "dedupe by device id plus sequence number, keep counter on bridge across restarts"}
+{"time": "00:06:03", "speaker": "Pavel", "text": "accepted or still sketching"}
+{"time": "00:06:14", "speaker": "Mara", "text": "accepted, each reading carries device id and monotonic sequence; ingest deduplicates on that pair"}
+{"time": "00:06:35", "speaker": "Nisha", "text": "I was going to say Kafka, each depot writes straight to a partition"}
+{"time": "00:06:49", "speaker": "Ivo", "text": "not each depot, key it by kiln id or readings from one kiln can reorder"}
+{"time": "00:07:06", "speaker": "Nisha", "text": "right kiln id. Kafka behind IoT Core, partition by kiln id"}
+{"time": "00:07:29", "speaker": "Pavel", "text": "cloud function in between"}
+{"time": "00:07:37", "speaker": "Nisha", "text": "sorry I said Lambda, not cloud function, the AWS Lambda adapter forwards accepted messages to Kafka"}
+{"time": "00:07:54", "speaker": "Mara", "text": "one more hop. Can IoT rule publish directly to Kafka"}
+{"time": "00:08:07", "speaker": "Nisha", "text": "No, managed rule cannot safely do our envelope normalization. Lambda is real; keep it"}
+{"time": "00:08:22", "speaker": "Pavel", "text": "console reads from Kafka"}
+{"time": "00:08:29", "speaker": "Ivo", "text": "not directly, materialize latest values in TimescaleDB. Console queries that, alarms consume stream"}
+{"time": "00:08:51", "speaker": "Mara", "text": "Timescale for latest readings and history, how much history"}
+{"time": "00:09:02", "speaker": "Nisha", "text": "one year online"}
+{"time": "00:09:06", "speaker": "Mara", "text": "No, I was going to say one year is too much to promise, I mean—"}
+{"time": "00:09:10", "speaker": "Pavel", "text": "ninety days online, cold archive after that, compliance asked for that"}
+{"time": "00:09:20", "speaker": "Mara", "text": "exactly, sorry I got cut off. Ninety days queryable, then S3 archive for seven years"}
+{"time": "00:09:47", "speaker": "Ivo", "text": "alarm thresholds in this design"}
+{"time": "00:09:55", "speaker": "Mara", "text": "rule evaluator is, thresholds stay owned by safety team and loaded from their config service"}
+{"time": "00:10:12", "speaker": "Nisha", "text": "I propose a dedicated alarm rules database in our account"}
+{"time": "00:10:20", "speaker": "Pavel", "text": "we do not have authority to duplicate their thresholds"}
+{"time": "00:10:28", "speaker": "Mara", "text": "rejected. Read-only integration with Safety Config, no new threshold database"}
+{"time": "00:10:52", "speaker": "Ivo", "text": "what does operator screen do when cloud is down"}
+{"time": "00:11:01", "speaker": "Nisha", "text": "depot display shows last received values, cloud alerting delayed"}
+{"time": "00:11:18", "speaker": "Mara", "text": "say explicitly stale values get timestamp and banner"}
+{"time": "00:11:36", "speaker": "Pavel", "text": "agreed, if data more than thirty seconds old show stale"}
+{"time": "00:11:54", "speaker": "Ivo", "text": "thirty feels strict for backhaul"}
+{"time": "00:12:02", "speaker": "Mara", "text": "make it sixty seconds. Thirty creates noise"}
+{"time": "00:12:21", "speaker": "Nisha", "text": "sixty accepted, reading timestamp stays visible"}
+{"time": "00:12:47", "speaker": "Pavel", "text": "encryption at rest on bridge"}
+{"time": "00:12:54", "speaker": "Ivo", "text": "hardware supports encrypted disk but need check older models"}
+{"time": "00:13:05", "speaker": "Mara", "text": "leave open. Ivo check two oldest bridge models with security"}
+{"time": "00:13:19", "speaker": "Ivo", "text": "I can do that by Friday"}
+{"time": "00:13:39", "speaker": "Nisha", "text": "alert consumer retries to pager service"}
+{"time": "00:13:47", "speaker": "Mara", "text": "yes, pager integration exists; this meeting only decides stream and handoff"}
+{"time": "00:14:03", "speaker": "Pavel", "text": "should we use protobuf"}
+{"time": "00:14:11", "speaker": "Nisha", "text": "JSON is fine for v1, readings small and easier to inspect"}
+{"time": "00:14:25", "speaker": "Mara", "text": "agreed JSON envelope, schema version required"}
+{"time": "00:14:43", "speaker": "Ivo", "text": "I heard schema version optional"}
+{"time": "00:14:47", "speaker": "Mara", "text": "required, I said required. Version one now, compatible additions only"}
+{"time": "00:15:08", "speaker": "Pavel", "text": "my screen went black, never mind it is back"}
+{"time": "00:15:18", "speaker": "Nisha", "text": "who owns replay test"}
+{"time": "00:15:26", "speaker": "Mara", "text": "Pavel validate duplicate and out-of-order replay against Kafka consumer by next Tuesday"}
+{"time": "00:15:41", "speaker": "Pavel", "text": "yep next Tuesday"}
+{"time": "00:16:02", "speaker": "Ivo", "text": "I will check bridge disk encryption by Friday"}
+{"time": "00:16:15", "speaker": "Mara", "text": "we are not deciding camera ingestion today"}
+{"time": "00:16:29", "speaker": "Nisha", "text": "nothing else"}
+{"time": "00:18:10", "speaker": "Mara", "text": "One last pass on retention. The ninety-day online period starts from the reading timestamp, not last query."}
+{"time": "00:19:02", "speaker": "Ivo", "text": "The depot bridge sends its last acknowledged sequence on reconnect, so cloud can ask for the gap only."}
+{"time": "00:20:14", "speaker": "Nisha", "text": "I will write the MQTT envelope example with sequence and schema version, due next Monday."}
+{"time": "00:21:03", "speaker": "Pavel", "text": "I can pair on replay test, but Mara should remain decision owner for dedupe."}
+{"time": "00:22:11", "speaker": "Mara", "text": "Agreed, Pavel owns replay validation only. Dedupe key stays device ID and sequence."}
+{"time": "00:23:25", "speaker": "Ivo", "text": "I checked the two oldest gateway boards, both support encrypted storage, but security has not confirmed key rotation."}
+{"time": "00:24:02", "speaker": "Mara", "text": "Encryption stays open until security confirms key rotation. Ivo owns follow-up by Friday."}
+{"time": "00:24:50", "speaker": "Nisha", "text": "No change to camera scope, still on inspection system."}
+{"time": "00:25:00", "speaker": "Mara", "text": "Thanks, closing."}
