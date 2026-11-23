@@ -364,8 +364,8 @@ describe("one-call shortcuts", () => {
 describe("replacement stays in the original topic", () => {
   it("moves a replacement filed under a new topic into the old answer's topic", () => {
     const h = new Harness()
-      .apply("record_item", decision("dec-sm", "accepted", "00:01:30", "we're going with Redis", { topic: "top-secret-storage", topic_title: "Secret storage", topic_question: "Where do secrets live?" }))
-      .apply("record_item", decision("dec-kms", "accepted", "00:05:30", "Agreed, Postgres for sessions", { topic: "top-secrets-kms", replaces: "dec-sm", reason: "rate limits" }));
+      .apply("record_item", decision("dec-secrets-manager", "accepted", "00:01:30", "we're going with Redis", { topic: "top-secret-storage", topic_title: "Secret storage", topic_question: "Where do secrets live?" }))
+      .apply("record_item", decision("dec-kms", "accepted", "00:05:30", "Agreed, Postgres for sessions", { topic: "top-secrets-kms", replaces: "dec-secrets-manager", reason: "rate limits" }));
     expect(h.state.items["dec-kms"]!.topic).toBe("top-secret-storage");
     expect(h.state.topics["top-secrets-kms"]!.question).toBe("");
   });
