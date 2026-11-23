@@ -30,7 +30,16 @@ export interface LiveRouteDeps {
 }
 
 /** A bot of any provider. `offset` aligns the provider's clock to the session clock. */
-export type LiveBotRecord = BotRecord & { provider: BotProviderId; seen: Set<string> };
+export type LiveBotRecord = BotRecord & {
+  provider: BotProviderId;
+  seen: Set<string>;
+  /** Join attempts so far (the watchdog retries a stuck bot once). */
+  attempts?: number;
+  /** Why the bot could not get into the call, shown in the UI with the fallback. */
+  failure?: string | null;
+  /** The bot that replaced this one after a stuck join. */
+  replacedBy?: string | null;
+};
 
 const MAX_WEBHOOK_BYTES = 1_000_000;
 const STATUS_CACHE_MS = 2000;
@@ -57,7 +66,58 @@ export function registerLiveRoutes(app: Hono, deps: LiveRouteDeps) {
     left: rec.left,
     status: remote?.status ?? null,
     error: remote?.error ?? null,
+    attempts: rec.attempts ?? 1,
+    failure: rec.failure ?? null,
+    replacedBy: rec.replacedBy ?? null,
   });
+
+  /**
+   * Join watchdog. A bot that is still "joining" (not in the waiting room, not in the call)
+   * after BOT_JOIN_TIMEOUT_MS is stuck on the provider side: it is removed and created again
+   * once; if that one sticks too, the bot is marked failed with a reason the UI shows,
+   * together with the fallback (capture the meeting tab's audio). A bot never just hangs.
+   */
+  const JOIN_TIMEOUT_MS = Number(env.BOT_JOIN_TIMEOUT_MS ?? 75_000);
+  const STUCK = new Set(["joining", "ready", "staged", "scheduled", "created", "joining_call"]);
+  const FATAL = /fatal|denied|could_not|cannot|can_t|rejected|kicked|failed/;
+  function watchJoin(rec: LiveBotRecord, webhookUrl: string) {
+    const t = setTimeout(async () => {
+      if (rec.left || rec.replacedBy || rec.lastEventAt) return;
+      statusCache.delete(rec.id);
+      const st = await remoteStatus(rec);
+      const code = st.status?.code ?? "joining";
+      if (FATAL.test(code) || FATAL.test(st.status?.subCode ?? "")) {
+        rec.failure = `The bot couldn't join (${st.status?.label ?? code}${st.status?.subCode ? `: ${st.status.subCode}` : ""}). Capture the meeting tab's audio instead.`;
+        return;
+      }
+      if (!STUCK.has(code)) return; // waiting room or in the call: fine
+      const provider = providers()[rec.provider];
+      try {
+        await provider.leave(rec.id).catch(() => undefined);
+      } catch {
+        /* best effort */
+      }
+      if ((rec.attempts ?? 1) >= 2) {
+        rec.left = true;
+        rec.failure = `The bot didn't get into the call within ${Math.round(JOIN_TIMEOUT_MS / 1000)} s twice (the bot server may be down or the meeting blocks guests). Capture the meeting tab's audio instead.`;
+        console.log(`bot ${rec.id}: stuck joining after retry; giving up`);
+        return;
+      }
+      try {
+        const bot = await provider.createBot({ meetingUrl: rec.meetingUrl, botName: rec.botName, webhookUrl });
+        const next: LiveBotRecord = { ...rec, id: bot.id, attempts: (rec.attempts ?? 1) + 1, seen: new Set(), createdAt: new Date().toISOString(), failure: null, replacedBy: null };
+        bots.set(bot.id, next);
+        rec.replacedBy = bot.id;
+        rec.left = true;
+        console.log(`bot ${rec.id}: stuck joining; retried as ${bot.id}`);
+        watchJoin(next, webhookUrl);
+      } catch (e) {
+        rec.left = true;
+        rec.failure = `The bot couldn't be restarted: ${(e as Error).message}. Capture the meeting tab's audio instead.`;
+      }
+    }, JOIN_TIMEOUT_MS);
+    t.unref?.();
+  }
 
   async function remoteStatus(rec: LiveBotRecord) {
     const cached = statusCache.get(rec.id);
@@ -139,8 +199,12 @@ export function registerLiveRoutes(app: Hono, deps: LiveRouteDeps) {
         lastEventAt: null,
         left: false,
         seen: new Set(),
+        attempts: 1,
+        failure: null,
+        replacedBy: null,
       };
       bots.set(bot.id, rec);
+      watchJoin(rec, webhookUrl);
       console.log(`${provider.id} bot ${bot.id} -> ${meetingUrl} (session ${session.id}, webhook ${base}${provider.webhookPath})`);
       return c.json({ bot: view(rec, { status: bot.status, error: null }), sessionId: session.id });
     } catch (e) {

@@ -188,12 +188,13 @@ export function SpeakerChips({ capture, state, seen }: { capture: LiveCapture; s
 export function BotStatus({ bot, onBot, onError }: { bot: BotView; onBot: (b: BotView | null) => void; onError: (e: unknown) => void }) {
   const done = bot.left || ["done", "fatal", "call_ended"].includes(bot.status?.code ?? "");
   useEffect(() => {
-    if (done) return;
+    if (done && !bot.replacedBy) return;
     const t = setInterval(() => {
-      api.bot(bot.id).then(onBot).catch(() => undefined);
+      // Follow a watchdog retry to the replacement bot.
+      api.bot(bot.replacedBy ?? bot.id).then(onBot).catch(() => undefined);
     }, 3000);
     return () => clearInterval(t);
-  }, [bot.id, done]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [bot.id, bot.replacedBy, done]); // eslint-disable-line react-hooks/exhaustive-deps
   const code = bot.status?.code ?? "created";
   const tone = code === "in_call_recording" ? "listening" : code === "fatal" || code.includes("denied") ? "error" : done ? "stopped" : "connecting";
   return (
@@ -207,7 +208,13 @@ export function BotStatus({ bot, onBot, onError }: { bot: BotView; onBot: (b: Bo
         {bot.utterances} line{bot.utterances === 1 ? "" : "s"}
         {bot.participants.length > 0 && ` · ${bot.participants.join(", ")}`}
         {bot.error && <span className="capture-error"> · {bot.error}</span>}
+        {(bot.attempts ?? 1) > 1 && !bot.failure && <span> · retried after a stuck join</span>}
       </div>
+      {bot.failure && (
+        <div className="capture-sub capture-error" role="alert">
+          {bot.failure} Use <b>Go live → Meeting tab + my mic</b> on the meeting's tab instead.
+        </div>
+      )}
       {!done && (
         <button
           className="btn ghost sm capture-stop"

@@ -40,6 +40,9 @@ export interface BotView {
   left: boolean;
   status: { code: string; label: string; subCode: string | null; message: string | null } | null;
   error: string | null;
+  attempts?: number;
+  failure?: string | null;
+  replacedBy?: string | null;
 }
 
 export interface UiOp {
