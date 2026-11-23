@@ -110,8 +110,8 @@ export function diarizeConfig(apiKey: string | undefined) {
   return {
     enabled: !!apiKey && flag !== "0" && flag !== "false",
     model: process.env.DIARIZE_MODEL || DEFAULT_DIARIZE_MODEL,
-    timeoutMs: Number(process.env.DIARIZE_TIMEOUT_MS) || 10_000,
-    mode: (process.env.DIARIZE_MODE === "refs" ? "refs" : "context") as DiarizeMode,
+    timeoutMs: Number(process.env.DIARIZE_TIMEOUT_MS) || 8000,
+    mode: (process.env.DIARIZE_MODE === "context" ? "context" : "refs") as DiarizeMode,
   };
 }
 
@@ -142,10 +142,10 @@ export function openaiDiarize(apiKey: string, model = DEFAULT_DIARIZE_MODEL, bas
 
 /**
  * How known voices are given to the model:
- *  - "refs": known_speaker_names[] + known_speaker_references[] (the API's enrolment feature).
+ *  - "refs" (default): known_speaker_names[] + known_speaker_references[] (the API's enrolment feature).
  *  - "context": the reference clips are prepended to the turn in the same file and the labels the
- *    model gives the reference spans are mapped back to names. Costs the reference audio again on
- *    every call (~1–2 s more latency), but in our tests it separated similar voices more reliably.
+ *    model gives the reference spans are mapped back to names. Re-sends the references on every
+ *    call: about twice the latency (7–11 s with 3 speakers) and cost; an option if "refs" merges voices.
  */
 export type DiarizeMode = "refs" | "context";
 
@@ -190,7 +190,7 @@ export class SpeakerRegistry {
     this.minRefMs = opts.minRefMs ?? 2000;
     this.maxRefMs = opts.maxRefMs ?? 10_000;
     this.log = opts.log ?? (() => {});
-    this.mode = opts.mode ?? "context";
+    this.mode = opts.mode ?? "refs";
   }
   readonly mode: DiarizeMode;
   private log: (msg: string) => void;

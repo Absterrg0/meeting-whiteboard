@@ -5,8 +5,8 @@ Every input reaches the agent the same way: `MeetingSession.addUtterance({ speak
 | Source | Speaker names | Needs |
 |---|---|---|
 | Transcript file (replay) | from the file | nothing |
-| Microphone | "Mic", or the name picked in **Speaking now** | `OPENAI_API_KEY` |
-| Meeting tab audio (Meet / Zoom web / Teams web in Chrome or Edge) | "Meeting", or the name picked in **Speaking now**; with "tab + my mic", your own lines are labelled with your name | `OPENAI_API_KEY` |
+| Microphone | Detected speakers ("Speaker 1", ... renamable), or the name picked in **Speaking now**; "Mic" when neither | `OPENAI_API_KEY` |
+| Meeting tab audio (Meet / Zoom web / Teams web in Chrome or Edge) | Detected speakers, or the name picked in **Speaking now**; "Meeting" when neither; with "tab + my mic", your own lines are labelled with your name | `OPENAI_API_KEY` |
 | Meeting bot (Recall.ai) | real participant names from the meeting platform | `RECALL_API_KEY`, a public URL |
 | Meeting bot (Attendee, self-hosted) | real participant names from the meeting platform | an Attendee instance in Docker, `ATTENDEE_API_KEY`, a public URL (or `ATTENDEE_WEBHOOK_BASE_URL`) |
 
@@ -39,7 +39,7 @@ server (src/live/audioRelay.ts)
   -> session.addUtterance({ speaker, text, t })
 ```
 
-Realtime transcription does not tell speakers apart. The **Speaking now** chips set the speaker for the next lines: click a name or press keys 1–9, and 0 to go back to the source label. A line gets the name that was selected when the line started, with 1 s of grace for a late click. Each source has its own transcription stream, so in "tab + my mic" mode your lines and the meeting's lines are always told apart. If OpenAI closes a session (sessions have a maximum length), the server opens a new one on the same audio clock.
+Realtime transcription does not tell speakers apart, so the server adds automatic speaker labels (next section). The **Speaking now** chips override them: click a name or press keys 1–9, and 0 to go back to automatic ("Auto", or the source label when diarization is off). A line gets the name that was selected when the line started, with 1 s of grace for a late click. Each source has its own transcription stream, so in "tab + my mic" mode your lines and the meeting's lines are always told apart. If OpenAI closes a session (sessions have a maximum length), the server opens a new one on the same audio clock.
 
 **Model choice.** I compared five models on synthesized meeting speech, clean and with pink noise, streamed in real time:
 
@@ -53,7 +53,27 @@ Realtime transcription does not tell speakers apart. The **Speaking now** chips 
 
 The default is `gpt-4o-transcribe` with server VAD: it was as fast as the others and held sentence boundaries in noise. `TRANSCRIBE_MODEL` overrides it. `gpt-4o-mini-transcribe` costs half as much. For `gpt-live-transcribe` and `gpt-realtime-whisper`, the server runs its own energy VAD and commits turns itself.
 
-Test without a microphone: `pnpm start`, then `pnpm live:demo`. It synthesizes a four-line meeting with OpenAI TTS (or espeak-ng), streams it through the same WebSocket the browser uses while switching the "speaking now" label, and checks the session transcript. It costs under $0.01.
+### Automatic speaker labels (diarization)
+
+On by default when `OPENAI_API_KEY` is set; `DIARIZE=0` turns it off. Code: `src/live/diarize.ts`, used by `src/live/audioRelay.ts`.
+
+1. The relay keeps the last 3 minutes of each source's audio (24 kHz PCM16) and the span of each turn from the realtime server VAD (`speech_started.audio_start_ms` / `speech_stopped.audio_end_ms`).
+2. When a turn's transcript completes, its audio (±200 ms) is wrapped as WAV and sent to `POST /v1/audio/transcriptions` with `model=gpt-4o-transcribe-diarize`, `response_format=diarized_json`, `chunking_strategy=auto`. The text still comes from the realtime transcript; only the segments' speakers are used, and the turn gets the speaker with the most speaking time.
+3. Enrolment: the first time a voice comes back that is not a known speaker, 2–10 s of it from that turn is saved as its reference and named "Speaker 1", "Speaker 2", ... (max 4 per session, shared by the session's sources). Known voices are passed on every later call so labels stay the same for the whole meeting.
+4. Two ways to pass known voices (`DIARIZE_MODE`):
+   - `refs` (default): the API's `known_speaker_names[]` + `known_speaker_references[]` (data URLs). In the TTS demo it passed 2 of 3 full runs; the failure was a new voice's first line being matched to an existing similar voice (nova labelled as alloy's "Speaker 1").
+   - `context`: the first 4 s of each reference is put ahead of the turn in the same file (600 ms gaps) and the labels the model gives the reference spans are mapped back to names. It separated the voices correctly in every labelled line we saw, but re-sends the references every turn: 7–11 s per call with 3 speakers, so many lines hit the timeout.
+5. The line is added once diarization answers, in order. If it takes longer than `DIARIZE_TIMEOUT_MS` (default 8 s) or fails, the line gets the **Speaking now** / source label so lines never get stuck. Calls run in parallel; a call that returns an unknown voice after another call enrolled someone is retried once with the new references, so one voice is not enrolled twice.
+6. Renaming: detected speakers appear as chips; the pencil on a chip renames it ("Speaker 1" -> "Lena"). The name is used for future lines (it replaces the known speaker's name) and past transcript lines are rewritten (`MeetingSession.renameSpeaker`); doc items keep their text. Over the WebSocket: `{"type":"rename","from","to"}`.
+7. A name picked in **Speaking now** wins over detection (and that turn is not sent for diarization).
+
+Latency and cost: diarization adds about 4–5 s per turn in `refs` mode (measured median 4.6 s, max 5.3 s; the API's own processing time, so a 4 s timeout would drop most labels) and 7–11 s in `context` mode, on top of the realtime transcript. gpt-4o-transcribe-diarize is billed per audio minute like gpt-4o-transcribe; `context` mode re-sends up to 4 × 10 s of references per turn, so it costs up to a few times the meeting's audio length.
+
+Limits: at most 4 enrolled speakers (a fifth voice gets the fallback label); a turn whose new voice speaks less than 2 s is not enrolled and gets the fallback label; overlapping speech and short interjections inside one turn are attributed to the turn's majority speaker; similar voices can still be merged; the per-session voice registry lives in memory (a server restart starts from "Speaker 1" again); renames are not written back to the saved `transcript.jsonl`.
+
+### Testing without a microphone
+
+`pnpm live:demo` synthesizes a six-line, three-voice meeting with OpenAI TTS (alloy, onyx, nova; cached in `out/live-demo-audio`), streams it through the real relay (in-process; `--server URL` uses a running server instead) over the same WebSocket the browser uses, renames the first detected speaker, and checks that every line was transcribed, each voice kept one label, different voices got different labels and the rename rewrote past lines. `--chips` runs the older check that switches the "speaking now" label instead. About $0.02 per run.
 
 ## Meeting bot (Recall.ai)
 

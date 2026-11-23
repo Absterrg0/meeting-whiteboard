@@ -3,8 +3,9 @@
  *
  * Microphone (getUserMedia) and/or a meeting tab's audio (getDisplayMedia with "share tab audio")
  * are each resampled to 24 kHz mono PCM16 in an AudioWorklet and streamed over a WebSocket to our
- * server, which relays them to OpenAI's realtime transcription. Each source has its own stream, so
- * transcripts are labelled by source ("Mic" / "Meeting") unless the user picks who is speaking.
+ * server, which relays them to OpenAI's realtime transcription. Each source has its own stream.
+ * With diarization on (server default), lines get detected speakers ("Speaker 1", ...) that can be
+ * renamed; otherwise they are labelled by source ("Mic" / "Meeting"). Picking who is speaking wins.
  */
 
 export type LiveMode = "type" | "mic" | "tab" | "tab+mic";
@@ -18,6 +19,8 @@ export interface SourceState {
   partial: string;
   error: string | null;
   label: string;
+  /** The server labels speakers automatically. */
+  diarize: boolean;
 }
 
 export interface CaptureState {
@@ -120,8 +123,8 @@ class SourceStreamer {
     };
     ws.onmessage = (e) => {
       if (typeof e.data !== "string") return;
-      const m = JSON.parse(e.data) as { type: string; text?: string; message?: string; model?: string };
-      if (m.type === "ready") this.onUpdate({ status: "listening", model: m.model ?? null, error: null });
+      const m = JSON.parse(e.data) as { type: string; text?: string; message?: string; model?: string; diarize?: boolean };
+      if (m.type === "ready") this.onUpdate({ status: "listening", model: m.model ?? null, error: null, diarize: !!m.diarize });
       else if (m.type === "partial") this.onUpdate({ partial: m.text ?? "" });
       else if (m.type === "final") this.onUpdate({ partial: "" });
       else if (m.type === "error") this.onUpdate({ error: m.message ?? "error" });
@@ -133,6 +136,13 @@ class SourceStreamer {
     };
     // A track can end from the browser UI ("Stop sharing").
     for (const t of this.stream.getAudioTracks()) t.addEventListener("ended", () => void this.stop());
+  }
+
+  /** Returns false when the stream is not connected. */
+  rename(from: string, to: string): boolean {
+    if (this.ws?.readyState !== WebSocket.OPEN) return false;
+    this.ws.send(JSON.stringify({ type: "rename", from, to }));
+    return true;
   }
 
   setSpeaker(name: string | null) {
@@ -210,7 +220,7 @@ export class LiveCapture {
     private streams: { source: Source; stream: MediaStream; label: string }[],
   ) {
     this.state = {
-      sources: streams.map((s) => ({ source: s.source, status: "connecting", model: null, level: 0, partial: "", error: null, label: s.label })),
+      sources: streams.map((s) => ({ source: s.source, status: "connecting", model: null, level: 0, partial: "", error: null, label: s.label, diarize: false })),
       speaker: null,
       target: streams.some((s) => s.source === "meeting") ? "meeting" : "mic",
     };
@@ -242,6 +252,11 @@ export class LiveCapture {
     this.state = { ...this.state, speaker: name };
     this.streamers.find((s) => s.source === this.state.target)?.setSpeaker(name);
     this.notify();
+  }
+
+  /** "Speaker 1" -> "Lena": future lines and past transcript lines (the server's voice registry is per session). */
+  renameSpeaker(from: string, to: string) {
+    for (const s of this.streamers) if (s.rename(from, to)) return;
   }
 
   async stop() {

@@ -1,5 +1,5 @@
 /** Live-audio and meeting-bot pieces (capture status, "speaking now" chips, the bot panel). */
-import { Mic, MonitorSpeaker, Plus, X } from "lucide-react";
+import { Mic, MonitorSpeaker, Pencil, Plus, X } from "lucide-react";
 import { useEffect, useMemo, useState, useSyncExternalStore, type FormEvent } from "react";
 import { api, type BotView, type LiveConfig } from "./api";
 import type { CaptureState, LiveCapture } from "./audio";
@@ -65,17 +65,24 @@ export function CaptureStatus({ capture }: { capture: LiveCapture }) {
   );
 }
 
-/** "Speaking now" chips. Realtime transcription has no diarization, so the user says who is talking. */
+/**
+ * "Speaking now" chips. With diarization on, the server labels voices "Speaker 1", "Speaker 2", ...
+ * (they appear here as they are detected; the pencil renames one everywhere). Clicking a chip
+ * says who is talking and overrides detection until "Auto" is picked again.
+ */
 export function SpeakerChips({ capture, state, seen }: { capture: LiveCapture; state: CaptureState; seen: string[] }) {
   const [names, setNames] = useState<string[]>(loadNames);
   const [adding, setAdding] = useState(false);
   const [draft, setDraft] = useState("");
+  const [renaming, setRenaming] = useState<string | null>(null);
+  const [renameDraft, setRenameDraft] = useState("");
   const all = useMemo(() => {
     const out = [...names];
     for (const n of seen) if (!SOURCE_LABELS.has(n) && !out.includes(n)) out.push(n);
     return out.slice(0, 12);
   }, [names, seen]);
-  const auto = state.target === "meeting" ? "Meeting" : "Mic";
+  const diarize = state.sources.some((s) => s.diarize);
+  const auto = diarize ? "Auto" : state.target === "meeting" ? "Meeting" : "Mic";
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -102,6 +109,21 @@ export function SpeakerChips({ capture, state, seen }: { capture: LiveCapture; s
     setDraft("");
     setAdding(false);
   };
+  const rename = (e: FormEvent) => {
+    e.preventDefault();
+    const from = renaming;
+    const to = renameDraft.trim().slice(0, 60);
+    setRenaming(null);
+    setRenameDraft("");
+    if (!from || !to || to === from) return;
+    capture.renameSpeaker(from, to);
+    const next = names.includes(from) ? names.map((x) => (x === from ? to : x)) : names;
+    if (next !== names) {
+      setNames(next);
+      saveNames(next);
+    }
+    if (state.speaker === from) capture.setSpeaker(to);
+  };
   const remove = (n: string) => {
     const next = names.filter((x) => x !== n);
     setNames(next);
@@ -112,21 +134,43 @@ export function SpeakerChips({ capture, state, seen }: { capture: LiveCapture; s
   return (
     <div className="chips" role="group" aria-label="Speaking now">
       <span className="chips-label">Speaking</span>
-      <button className={`chip${state.speaker === null ? " active" : ""}`} onClick={() => capture.setSpeaker(null)} title="Label by source (key 0)">
+      <button
+        className={`chip${state.speaker === null ? " active" : ""}`}
+        onClick={() => capture.setSpeaker(null)}
+        title={diarize ? "Detect speakers automatically (key 0)" : "Label by source (key 0)"}
+      >
         {auto}
       </button>
-      {all.map((n, i) => (
+      {all.map((n, i) =>
+        renaming === n ? (
+          <form key={n} onSubmit={rename} className="chip-add">
+            <input
+              autoFocus
+              value={renameDraft}
+              onChange={(e) => setRenameDraft(e.target.value)}
+              placeholder={`Rename ${n}`}
+              onBlur={() => !renameDraft && setRenaming(null)}
+              onKeyDown={(e) => e.key === "Escape" && setRenaming(null)}
+            />
+          </form>
+        ) : (
         <span key={n} className={`chip${state.speaker === n ? " active" : ""}`}>
           <button className="chip-name" onClick={() => capture.setSpeaker(n)} title={i < 9 ? `Key ${i + 1}` : undefined}>
             {n}
           </button>
+          {seen.includes(n) && (
+            <button className="chip-x" onClick={() => (setRenaming(n), setRenameDraft(""))} aria-label={`Rename ${n}`} title="Rename everywhere">
+              <Pencil size={10} />
+            </button>
+          )}
           {names.includes(n) && (
             <button className="chip-x" onClick={() => remove(n)} aria-label={`Remove ${n}`}>
               <X size={11} />
             </button>
           )}
         </span>
-      ))}
+        ),
+      )}
       {adding ? (
         <form onSubmit={add} className="chip-add">
           <input autoFocus value={draft} onChange={(e) => setDraft(e.target.value)} placeholder="Name" onBlur={() => !draft && setAdding(false)} />
