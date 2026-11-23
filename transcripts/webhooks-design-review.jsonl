@@ -1,0 +1,50 @@
+{"time": "00:00:05", "speaker": "Tomás", "text": "Morning all. Did anyone catch the game last night?"}
+{"time": "00:00:18", "speaker": "Marcus", "text": "Don't remind me."}
+{"time": "00:00:30", "speaker": "Priya", "text": "OK, let's get going. Goal today is to agree the design for outbound webhooks. Customers want us to notify their systems when an invoice is paid or a subscription changes."}
+{"time": "00:01:10", "speaker": "Tomás", "text": "From the product side, v1 needs at-least-once delivery, retries for about 24 hours, delivery logs customers can see, and signature verification. Exactly-once is not a goal."}
+{"time": "00:01:45", "speaker": "Priya", "text": "Good. And a non-goal: no customer-configurable payload transformations in v1."}
+{"time": "00:02:20", "speaker": "Marcus", "text": "Rough sketch: the billing service emits an event, we write it to a queue, a delivery worker picks it up and POSTs it to the customer's endpoint."}
+{"time": "00:03:05", "speaker": "Lena", "text": "What queue are you thinking?"}
+{"time": "00:03:15", "speaker": "Marcus", "text": "What if we used Kafka? We already run it for analytics."}
+{"time": "00:03:40", "speaker": "Lena", "text": "Kafka's fine for fan-out, but per-message retries with backoff are painful. We'd end up building a ladder of retry topics."}
+{"time": "00:04:12", "speaker": "Priya", "text": "Let's park the queue for a minute and talk storage. Let's put Postgres behind the API for now: endpoints, subscriptions and delivery attempts."}
+{"time": "00:04:40", "speaker": "Marcus", "text": "Works for me. Delivery attempts in Postgres with an index on endpoint and created_at."}
+{"time": "00:05:30", "speaker": "Lena", "text": "What volume are we expecting? Delivery attempts could get big."}
+{"time": "00:05:45", "speaker": "Tomás", "text": "Our largest customer does around two million events a day. Maybe ten million a day in total at launch."}
+{"time": "00:06:20", "speaker": "Lena", "text": "Ten million attempt rows a day in the main Postgres is going to hurt, and that database is shared with billing."}
+{"time": "00:07:00", "speaker": "Priya", "text": "Fair. So: endpoints and subscriptions stay in Postgres. Delivery attempt logs go somewhere else. Which store is an open question."}
+{"time": "00:07:30", "speaker": "Marcus", "text": "ClickHouse? We already have it for analytics."}
+{"time": "00:07:50", "speaker": "Lena", "text": "I'd rather customer-facing reads didn't hit the analytics cluster. Let me look into options. We're not deciding that today."}
+{"time": "00:08:40", "speaker": "Priya", "text": "OK, back to the queue. Lena, what would you use?"}
+{"time": "00:09:00", "speaker": "Lena", "text": "SQS with a dead-letter queue. The visibility timeout gives us retries almost for free, and message delay goes up to fifteen minutes for backoff."}
+{"time": "00:09:35", "speaker": "Marcus", "text": "A fifteen-minute maximum delay is fine if we re-enqueue with increasing delays."}
+{"time": "00:10:05", "speaker": "Priya", "text": "Alright, we're going with SQS for delivery. Kafka's out for this."}
+{"time": "00:10:30", "speaker": "Marcus", "text": "Then I'd add a separate scheduler service for retries longer than fifteen minutes. It would poll Postgres for retries that are due."}
+{"time": "00:11:20", "speaker": "Tomás", "text": "What about ordering? Do customers need events in order?"}
+{"time": "00:11:45", "speaker": "Priya", "text": "Not guaranteed in v1. We include a sequence number and a timestamp in each payload and document that."}
+{"time": "00:12:30", "speaker": "Lena", "text": "Security: we sign payloads with HMAC SHA-256 using a per-endpoint secret, and include a timestamp header to prevent replays."}
+{"time": "00:13:10", "speaker": "Priya", "text": "Agreed. The secrets live in our secrets manager, not in Postgres."}
+{"time": "00:13:40", "speaker": "Marcus", "text": "Hmm, one secret per endpoint in the secrets manager might hit its rate limits. Could we encrypt them with KMS and keep them in Postgres instead?"}
+{"time": "00:14:20", "speaker": "Lena", "text": "That's actually cleaner. Envelope encryption with KMS, ciphertext in Postgres."}
+{"time": "00:14:45", "speaker": "Priya", "text": "OK, changing that: secrets are encrypted with KMS and stored in Postgres, not in the secrets manager."}
+{"time": "00:15:30", "speaker": "Tomás", "text": "For the customer-facing log, can we show the last thirty days?"}
+{"time": "00:15:50", "speaker": "Priya", "text": "Let's say thirty days for v1 and revisit it with the storage decision."}
+{"time": "00:16:40", "speaker": "Lena", "text": "Egress: the workers call arbitrary customer URLs. We need to block internal IP ranges so nobody can use webhooks to reach our internal network."}
+{"time": "00:17:05", "speaker": "Marcus", "text": "SSRF protection, yes. Run the workers in their own subnet behind an egress proxy."}
+{"time": "00:17:30", "speaker": "Priya", "text": "Yes, the egress proxy is a must. Lena, can you own the egress proxy setup?"}
+{"time": "00:17:40", "speaker": "Lena", "text": "Yep, I'll take it."}
+{"time": "00:18:30", "speaker": "Marcus", "text": "Back to the scheduler. If we use SQS for short retries anyway, can we just keep re-enqueueing at the maximum delay until the 24 hours are up? Then there's no scheduler service and no polling Postgres."}
+{"time": "00:19:10", "speaker": "Lena", "text": "That's about a hundred re-enqueues per message in the worst case. Totally fine on cost."}
+{"time": "00:19:30", "speaker": "Priya", "text": "I like that. Let's drop the scheduler service. Retries live entirely in SQS: the worker re-enqueues with backoff capped at fifteen minutes, and after 24 hours the message goes to the dead-letter queue."}
+{"time": "00:20:10", "speaker": "Tomás", "text": "And when something lands in the dead-letter queue, the customer gets an email?"}
+{"time": "00:20:25", "speaker": "Priya", "text": "An email, and the endpoint is marked as failing in the dashboard. After three days of failures we auto-disable it."}
+{"time": "00:20:50", "speaker": "Tomás", "text": "Can we make it five days? Three feels aggressive for enterprise customers."}
+{"time": "00:21:05", "speaker": "Priya", "text": "Fine, five days."}
+{"time": "00:22:00", "speaker": "Marcus", "text": "I'll write the API spec for endpoint management by Friday."}
+{"time": "00:22:20", "speaker": "Tomás", "text": "I'll check the thirty-day log retention with two of our design partners."}
+{"time": "00:23:10", "speaker": "Lena", "text": "One more thing: should the worker run on Lambda or as containers on ECS?"}
+{"time": "00:23:30", "speaker": "Marcus", "text": "Lambda would be easy with SQS triggers."}
+{"time": "00:23:50", "speaker": "Lena", "text": "But Lambda inside the VPC with the egress proxy adds cold-start pain. I'd go with ECS."}
+{"time": "00:24:10", "speaker": "Priya", "text": "Let's not decide that today; I want to see load numbers first. Marcus, can you get a rough estimate?"}
+{"time": "00:24:20", "speaker": "Marcus", "text": "Sure."}
+{"time": "00:28:40", "speaker": "Priya", "text": "Thanks, everyone."}
