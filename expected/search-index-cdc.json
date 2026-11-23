@@ -1,33 +1,183 @@
 {
   "checks": [
-    {"id": "req-one-minute", "type": "llm", "desc": "Freshness requirement captured", "expect": "A current requirement that price and stock changes appear in search within one minute."},
-    {"id": "ng-ranking", "type": "llm", "desc": "Ranking out of scope", "expect": "Changes to ranking/relevance/personalization are recorded as a non-goal (out of scope)."},
-    {"id": "facts-numbers", "type": "llm", "desc": "Context numbers captured", "expect": "Facts capture roughly 40 million SKUs, a ~5 hour nightly rebuild and peak ~3,000 updates/second (at least two of the three)."},
-    {"id": "dec-dual-writes-rejected", "type": "llm", "desc": "Dual writes rejected with reason", "expect": "Dual writes (catalog service writing to both MySQL and Elasticsearch) appear only as rejected, with a reason about many writers (fourteen services) and/or no recovery/replay when the stores disagree."},
-    {"id": "dec-cdc-narrowed", "type": "llm", "desc": "CDC accepted, scope narrowed to products and prices", "expect": "Debezium CDC from the catalog MySQL binlog into Kafka is accepted. Its current detail covers products and prices but NOT stock (stock was moved out at 00:10:15 because the warehouse system is the source of truth and catalog stock is synced every ten minutes). An open question exists about where stock updates should come from (e.g. the warehouse system/events)."},
-    {"id": "dec-flink-reversed", "type": "llm", "desc": "Flink reversed to a plain Go indexer", "expect": "The earlier accepted decision to use Flink for stream processing is superseded by an accepted decision for a plain Kafka consumer 'indexer' service (Go). The reason mentions nobody can operate/on-call Flink and/or the processing is stateless. Flink is not current."},
-    {"id": "redis-removed", "type": "llm", "desc": "Redis cache added then removed", "expect": "The Redis cache for category/brand lookups is no longer part of the current design (component removed and/or its decision superseded/dropped). The current design keeps category and brand lookups in the indexer's memory, refreshed from the CDC stream."},
-    {"id": "partitions-32", "type": "llm", "desc": "Partitions revised 12 -> 32", "expect": "Kafka catalog topics are partitioned by product ID with 32 partitions in the current state; 12 appears only in history/changelog."},
-    {"id": "bulk-flush-tentative", "type": "llm", "desc": "Bulk flush settings tentative", "expect": "Flushing bulk requests every 5 seconds or 1,000 documents is recorded as tentative (to revisit after the load test), not as a firm accepted decision."},
-    {"id": "reindex-open", "type": "llm", "desc": "Full reindex strategy left open with follow-up", "expect": "How to do full reindexes (keep the batch Airflow job weekly vs replay from compacted Kafka topics) is an open question with no decision either way, and Wei has an action item to write up both options with storage/runtime costs."},
-    {"id": "lag-alert", "type": "llm", "desc": "Consumer lag alert accepted", "expect": "A decision to page/alert when indexer consumer lag exceeds 60 seconds is accepted."},
-    {"id": "act-wei-dec4", "type": "llm", "desc": "Explicit action with due date", "expect": "An action item owned by Wei to have the Debezium connector running against the staging replica, due December 4th."},
-    {"id": "act-olumide-warehouse", "type": "llm", "desc": "Implicit action: Olumide checks warehouse events", "expect": "An action item owned by Olumide to look into what the warehouse team already publishes (warehouse events) exists."},
-    {"id": "price-alerts-not-accepted", "type": "llm", "desc": "Floated price-drop alerts not accepted", "expect": "Hamid's idea at 00:09:00 to feed price changes into app price-drop alerts was never picked up. It must not appear as an accepted/tentative decision or requirement or as an architecture component. Absent or proposed only both pass."},
-    {"id": "no-small-talk", "type": "llm", "desc": "Small talk ignored", "expect": "Nothing about Wei's trip to Lisbon or jet lag appears in the items or document."},
-    {"id": "no-invented-components", "type": "llm", "desc": "No invented components", "expect": "Every visible architecture component corresponds to something discussed (catalog MySQL, Debezium/Kafka Connect, Kafka/MSK, indexer, Elasticsearch, catalog writers/services, warehouse system as TBD, Airflow job if shown as TBD). Fail if undiscussed components appear (load balancer, API gateway, cache other than the removed Redis, monitoring stack, etc.)."},
-
-    {"id": "diag-no-flink", "type": "diagram_excludes", "desc": "Diagram has no Flink", "pattern": "flink"},
-    {"id": "diag-no-redis", "type": "diagram_excludes", "desc": "Diagram has no Redis", "pattern": "redis"},
-    {"id": "diag-kafka", "type": "diagram_includes", "desc": "Diagram has Kafka", "pattern": "kafka|msk"},
-    {"id": "diag-es", "type": "diagram_includes", "desc": "Diagram has Elasticsearch", "pattern": "elastic|search index"},
-    {"id": "diag-indexer", "type": "diagram_includes", "desc": "Diagram has the indexer", "pattern": "indexer"},
-    {"id": "diag-mysql", "type": "diagram_includes", "desc": "Diagram has catalog MySQL", "pattern": "mysql|catalog (db|database)"},
-    {"id": "diag-no-dual-write", "type": "diagram_excludes", "desc": "No dual-write edge", "pattern": "dual"},
-    {"id": "doc-32", "type": "doc_includes", "desc": "32 partitions in current doc", "pattern": "\\b(32|thirty[- ]two)\\b", "sections": "current"},
-    {"id": "doc-no-12-partitions", "type": "doc_excludes", "desc": "Old 12 partitions not in current doc", "pattern": "\\b(12|twelve)\\s+partitions?", "sections": "current"},
-    {"id": "doc-dec4", "type": "doc_includes", "desc": "Due date December 4th present", "pattern": "dec(ember)?\\.?\\s*4|4(th)?\\s+dec", "sections": "current"},
-    {"id": "doc-dual-logged", "type": "doc_includes", "desc": "Rejected dual writes kept in decision log", "pattern": "dual[- ]write", "sections": "all"},
-    {"id": "doc-no-lisbon", "type": "doc_excludes", "desc": "No small talk in doc", "pattern": "lisbon|jet ?lag", "sections": "all"}
+    {
+      "id": "req-one-minute",
+      "type": "llm",
+      "desc": "Freshness requirement captured",
+      "expect": "A current requirement that price and stock changes appear in search within one minute."
+    },
+    {
+      "id": "ng-ranking",
+      "type": "llm",
+      "desc": "Ranking out of scope",
+      "expect": "Changes to ranking/relevance/personalization are recorded as a non-goal (out of scope)."
+    },
+    {
+      "id": "facts-numbers",
+      "type": "llm",
+      "desc": "Context numbers captured",
+      "expect": "Facts capture roughly 40 million SKUs, a ~5 hour nightly rebuild and peak ~3,000 updates/second (at least two of the three)."
+    },
+    {
+      "id": "dec-dual-writes-rejected",
+      "type": "llm",
+      "desc": "Dual writes rejected with reason",
+      "expect": "Dual writes (catalog service writing to both MySQL and Elasticsearch) appear only as rejected, with a reason about many writers (fourteen services) and/or no recovery/replay when the stores disagree."
+    },
+    {
+      "id": "dec-cdc-narrowed",
+      "type": "llm",
+      "desc": "CDC accepted, scope narrowed to products and prices",
+      "expect": "Debezium CDC from the catalog MySQL binlog into Kafka is accepted. Its current detail covers products and prices but NOT stock (stock was moved out at 00:10:15 because the warehouse system is the source of truth and catalog stock is synced every ten minutes). An open question exists about where stock updates should come from (e.g. the warehouse system/events)."
+    },
+    {
+      "id": "dec-flink-reversed",
+      "type": "llm",
+      "desc": "Flink reversed to a plain Go indexer",
+      "expect": "The earlier accepted decision to use Flink for stream processing is superseded by an accepted decision for a plain Kafka consumer 'indexer' service (Go). The reason mentions nobody can operate/on-call Flink and/or the processing is stateless. Flink is not current."
+    },
+    {
+      "id": "redis-removed",
+      "type": "llm",
+      "desc": "Redis cache added then removed",
+      "expect": "The Redis cache for category/brand lookups is no longer part of the current design (component removed and/or its decision superseded/dropped). The current design keeps category and brand lookups in the indexer's memory, refreshed from the CDC stream."
+    },
+    {
+      "id": "partitions-32",
+      "type": "llm",
+      "desc": "Partitions revised 12 -> 32",
+      "expect": "Kafka catalog topics are partitioned by product ID with 32 partitions in the current state; 12 appears only in history/changelog."
+    },
+    {
+      "id": "bulk-flush-tentative",
+      "type": "llm",
+      "desc": "Bulk flush settings tentative",
+      "expect": "Flushing bulk requests every 5 seconds or 1,000 documents is recorded as tentative (to revisit after the load test), not as a firm accepted decision."
+    },
+    {
+      "id": "reindex-open",
+      "type": "llm",
+      "desc": "Full reindex strategy left open with follow-up",
+      "expect": "How to do full reindexes (keep the batch Airflow job weekly vs replay from compacted Kafka topics) is an open question with no decision either way, and Wei has an action item to write up both options with storage/runtime costs."
+    },
+    {
+      "id": "lag-alert",
+      "type": "llm",
+      "desc": "Consumer lag alert accepted",
+      "expect": "A decision to page/alert when indexer consumer lag exceeds 60 seconds is accepted."
+    },
+    {
+      "id": "act-wei-dec4",
+      "type": "llm",
+      "desc": "Explicit action with due date",
+      "expect": "An action item owned by Wei to have the Debezium connector running against the staging replica, due December 4th."
+    },
+    {
+      "id": "act-olumide-warehouse",
+      "type": "llm",
+      "desc": "Implicit action: Olumide checks warehouse events",
+      "expect": "An action item owned by Olumide to look into what the warehouse team already publishes (warehouse events) exists."
+    },
+    {
+      "id": "price-alerts-not-accepted",
+      "type": "llm",
+      "desc": "Floated price-drop alerts not accepted",
+      "expect": "Hamid's idea at 00:09:00 to feed price changes into app price-drop alerts was never picked up. It must not appear as an accepted/tentative decision or requirement or as an architecture component. Absent, proposed, or an open question all pass."
+    },
+    {
+      "id": "no-small-talk",
+      "type": "llm",
+      "desc": "Small talk ignored",
+      "expect": "Nothing about Wei's trip to Lisbon or jet lag appears in the items or document."
+    },
+    {
+      "id": "no-invented-components",
+      "type": "llm",
+      "desc": "No invented components",
+      "expect": "Every visible architecture component corresponds to something discussed (catalog MySQL, Debezium/Kafka Connect, Kafka/MSK, indexer, Elasticsearch, catalog writers/services, warehouse system as TBD, Airflow job if shown as TBD). Fail if undiscussed components appear (load balancer, API gateway, cache other than the removed Redis, monitoring stack, etc.)."
+    },
+    {
+      "id": "airflow-not-active",
+      "type": "llm",
+      "desc": "Nightly Airflow job not drawn as part of the new design",
+      "expect": "The nightly Airflow rebuild job is the system being replaced, and whether a batch job survives for full reindexes is an open question. It must not be shown as an active (shownAs 'active') component with active edges in the new architecture. Absent, retired, or TBD (basis = the open reindex question) all pass."
+    },
+    {
+      "id": "diag-no-flink",
+      "type": "diagram_excludes",
+      "desc": "Diagram has no Flink",
+      "pattern": "flink"
+    },
+    {
+      "id": "diag-no-redis",
+      "type": "diagram_excludes",
+      "desc": "Diagram has no Redis",
+      "pattern": "redis"
+    },
+    {
+      "id": "diag-kafka",
+      "type": "diagram_includes",
+      "desc": "Diagram has Kafka",
+      "pattern": "kafka|msk"
+    },
+    {
+      "id": "diag-es",
+      "type": "diagram_includes",
+      "desc": "Diagram has Elasticsearch",
+      "pattern": "elastic|search index"
+    },
+    {
+      "id": "diag-indexer",
+      "type": "diagram_includes",
+      "desc": "Diagram has the indexer",
+      "pattern": "indexer"
+    },
+    {
+      "id": "diag-mysql",
+      "type": "diagram_includes",
+      "desc": "Diagram has catalog MySQL",
+      "pattern": "mysql|catalog (db|database)"
+    },
+    {
+      "id": "diag-no-dual-write",
+      "type": "diagram_excludes",
+      "desc": "No dual-write edge",
+      "pattern": "dual"
+    },
+    {
+      "id": "doc-32",
+      "type": "doc_includes",
+      "desc": "32 partitions in current doc",
+      "pattern": "\\b(32|thirty[- ]two)\\b",
+      "sections": "current"
+    },
+    {
+      "id": "doc-no-12-partitions",
+      "type": "doc_excludes",
+      "desc": "Old value 12 (partitions) not in current doc, incl. Why lines",
+      "pattern": "\\b(12|twelve)\\b",
+      "sections": "current"
+    },
+    {
+      "id": "doc-dec4",
+      "type": "doc_includes",
+      "desc": "Due date December 4th present",
+      "pattern": "dec(ember)?\\.?\\s*4|4(th)?\\s+dec",
+      "sections": "current"
+    },
+    {
+      "id": "doc-dual-logged",
+      "type": "doc_includes",
+      "desc": "Rejected dual writes kept in decision log",
+      "pattern": "dual[- ]write",
+      "sections": "all"
+    },
+    {
+      "id": "doc-no-lisbon",
+      "type": "doc_excludes",
+      "desc": "No small talk in doc",
+      "pattern": "lisbon|jet ?lag",
+      "sections": "all"
+    }
   ]
 }

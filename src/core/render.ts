@@ -9,10 +9,18 @@ export type ComponentVisibility = "active" | "tbd" | "proposed" | "retired";
 
 const LIVE = new Set(["accepted", "tentative"]);
 
+/**
+ * Which items can put something on the diagram. A fact ("today a nightly job rebuilds
+ * the index") describes the current world, not the design, so it never does on its own.
+ */
+function isLiveBasis(i: Item): boolean {
+  return i.kind !== "fact" && LIVE.has(i.status);
+}
+
 export function componentVisibility(state: DocState, c: Component): ComponentVisibility {
   if (c.removed) return "retired";
   const basis = c.basis.map((b) => state.items[b]).filter((x): x is Item => !!x);
-  if (basis.some((b) => LIVE.has(b.status))) return "active";
+  if (basis.some(isLiveBasis)) return "active";
   if (basis.some((b) => b.kind === "open_question" && b.status === "open")) return "tbd";
   if (basis.some((b) => b.status === "proposed")) return "proposed";
   return "retired";
@@ -27,7 +35,7 @@ export function edgeVisibility(state: DocState, e: Edge): ComponentVisibility {
   const vb = componentVisibility(state, b);
   if (va === "retired" || vb === "retired") return "retired";
   const basis = e.basis.map((id) => state.items[id]).filter((x): x is Item => !!x);
-  const own: ComponentVisibility = basis.some((x) => LIVE.has(x.status))
+  const own: ComponentVisibility = basis.some(isLiveBasis)
     ? "active"
     : basis.some((x) => x.kind === "open_question" && x.status === "open")
       ? "tbd"

@@ -50,10 +50,21 @@ export const RecordItem = z.object({
       "The current statement, written as documentation in 1-3 sentences. Include concrete values (numbers, durations, names).",
     ),
   status: z.enum(ITEM_STATUSES),
-  reason: z.string().nullable().optional().describe("Rationale, if one was given."),
+  reason: z
+    .string()
+    .nullable()
+    .optional()
+    .describe("The team's rationale for this item as it now stands. Never mention earlier values here."),
   owner: z.string().nullable().optional().describe("For action items: who took it."),
   due: z.string().nullable().optional().describe("For action items: due date exactly as said, else null."),
   related: lenientArray(id).optional().describe("Ids of related items."),
+  revised_from: z
+    .string()
+    .nullable()
+    .optional()
+    .describe(
+      "Only if the value was stated and then revised within the new lines: the earlier statement (e.g. 'auto-disable after 3 days'). It goes to the changelog, not the doc.",
+    ),
   ...grounding,
 });
 export type RecordItem = z.infer<typeof RecordItem>;
@@ -66,7 +77,12 @@ export const UpdateItem = z.object({
   owner: z.string().nullable().optional(),
   due: z.string().nullable().optional(),
   related: lenientArray(id).optional(),
-  reason: z.string().min(3).describe("Why it changed, in the team's terms."),
+  reason: z
+    .string()
+    .min(3)
+    .describe(
+      "Why it changed, in the team's terms (goes to the changelog). For status changes (accepted, rejected, resolved...) it also becomes the item's shown rationale.",
+    ),
   ...grounding,
 });
 export type UpdateItem = z.infer<typeof UpdateItem>;

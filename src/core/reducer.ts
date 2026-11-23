@@ -122,9 +122,11 @@ function checkStatus(kind: Item["kind"], status: Item["status"]) {
 function checkPinned(item: Item, ctx: ApplyContext, evidenceTs: string) {
   if (ctx.source !== "agent" || !item.pinned) return;
   const lastHuman = [...item.history].reverse().find((h) => h.source === "human");
-  if (lastHuman && parseTs(evidenceTs) <= parseTs(lastHuman.ts)) {
+  // Items created in the UI have no human history entry; their creation time is the pin.
+  const pinnedAt = lastHuman?.ts ?? item.createdAt;
+  if (parseTs(evidenceTs) <= parseTs(pinnedAt)) {
     fail(
-      `item '${item.id}' was corrected by a human at ${lastHuman.ts}; only change it if the discussion revisits it after that`,
+      `item '${item.id}' was set by a human at ${pinnedAt}; only change it if the discussion revisits it after that`,
     );
   }
 }
@@ -153,13 +155,25 @@ const recordItem: Handler<RecordItem> = (state, input, ctx) => {
     updatedAt: ev.ts,
     pinned: ctx.source === "human",
   };
+  if (input.revised_from) {
+    item.history.push({
+      ts: ev.ts,
+      field: "detail",
+      from: input.revised_from,
+      to: item.detail,
+      reason: "revised during the discussion",
+      source: ctx.source,
+    });
+  }
   state.items[item.id] = item;
   state.order.items.push(item.id);
   const owner = item.owner ? ` (owner: ${item.owner}${item.due ? `, due ${item.due}` : ""})` : "";
   return {
     ts: ev.ts,
     targets: [item.id],
-    summary: `Added ${item.kind.replace("_", " ")} "${item.title}" as ${item.status}${owner}.`,
+    summary: `Added ${item.kind.replace("_", " ")} "${item.title}" as ${item.status}${owner}.${
+      input.revised_from ? ` Revised during the discussion from: "${input.revised_from}".` : ""
+    }`,
   };
 };
 
@@ -198,11 +212,13 @@ const updateItem: Handler<UpdateItem> = (state, input, ctx) => {
   // own reason but does not replace the rationale unless there was none.
   if (ctx.source === "human") {
     if (!item.reason && input.reason !== "edited in UI") item.reason = input.reason;
-  } else if (input.status && ["rejected", "dropped", "accepted", "tentative", "resolved", "done"].includes(input.status)) {
-    item.reason = input.reason;
-  } else if (!item.reason) {
+  } else if (changes.some((c) => c.field === "status")) {
+    // A status change (accept, reject, resolve...) carries the rationale for the new status.
     item.reason = input.reason;
   }
+  // A revision of the detail alone keeps the item's rationale: the change reason
+  // ("moved from 12 to 32 partitions because...") lives in history and the changelog,
+  // so it cannot reintroduce the old value into the current doc.
   item.history.push(...changes);
   item.evidence.push(ev);
   item.updatedAt = ev.ts;
@@ -227,7 +243,7 @@ const supersedeItem: Handler<SupersedeItem> = (state, input, ctx) => {
   if (oldItem.status === "superseded") fail(`'${oldItem.id}' is already superseded by '${oldItem.supersededBy}'`);
   if (oldItem.status === "rejected") fail(`'${oldItem.id}' was rejected; it cannot also be superseded`);
   if (!["accepted", "tentative", "open"].includes(newItem.status)) {
-    fail(`replacement '${newItem.id}' must be accepted or tentative (it is ${newItem.status}); update it first`);
+    fail(`replacement '${newItem.id}' must be accepted, tentative or open (it is ${newItem.status}); update it first`);
   }
   if (!ALLOWED_STATUSES[oldItem.kind].includes("superseded")) {
     fail(`a ${oldItem.kind} cannot be superseded; resolve or drop it with update_item`);
