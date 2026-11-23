@@ -314,23 +314,56 @@ function normName(s: string): string {
   return s.toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
 }
 
-function jaccard(a: string[], b: string[]): number {
-  const A = new Set(a);
-  const B = new Set(b);
-  const inter = [...A].filter((x) => B.has(x)).length;
-  const union = new Set([...A, ...B]).size;
-  return union === 0 ? 1 : inter / union;
+function tokens(s: string): Set<string> {
+  return new Set(s.split(" ").filter((t) => t.length > 1 && !["the", "and", "of", "for", "service", "store"].includes(t)));
 }
 
-function meanPairwise(sets: string[][]): number | null {
-  if (sets.length < 2) return null;
-  let sum = 0;
-  let n = 0;
-  for (let i = 0; i < sets.length; i++) for (let j = i + 1; j < sets.length; j++) {
-    sum += jaccard(sets[i]!, sets[j]!);
-    n++;
+function similar(a: string, b: string): boolean {
+  if (a === b) return true;
+  const A = tokens(a);
+  const B = tokens(b);
+  const inter = [...A].filter((x) => B.has(x)).length;
+  return inter > 0 && inter / Math.min(A.size, B.size) >= 0.5;
+}
+
+/**
+ * Structural overlap of two diagrams: components are matched by name similarity
+ * ("Event queue (SQS)" ~ "SQS queue"), then edges are compared through that matching.
+ * Returns Jaccard-style overlaps for nodes and edges.
+ */
+function diagramOverlap(a: { nodes: string[]; edges: string[] }, b: { nodes: string[]; edges: string[] }) {
+  const match = new Map<string, string>();
+  const usedB = new Set<string>();
+  for (const x of a.nodes) {
+    const y = b.nodes.find((n) => !usedB.has(n) && similar(x, n));
+    if (y) {
+      match.set(x, y);
+      usedB.add(y);
+    }
   }
-  return sum / n;
+  const nodeUnion = a.nodes.length + b.nodes.length - match.size;
+  const mappedA = a.edges.map((e) => {
+    const [f, t] = e.split("->");
+    return `${match.get(f!) ?? `a:${f}`}->${match.get(t!) ?? `a:${t}`}`;
+  });
+  const B = new Set(b.edges);
+  const edgeInter = new Set(mappedA.filter((e) => B.has(e))).size;
+  const edgeUnion = new Set([...mappedA, ...b.edges]).size;
+  return { nodes: nodeUnion ? match.size / nodeUnion : 1, edges: edgeUnion ? edgeInter / edgeUnion : 1 };
+}
+
+function meanPairwise(runs: { nodes: string[]; edges: string[] }[]): { nodes: number; edges: number } | null {
+  if (runs.length < 2) return null;
+  let n = 0;
+  let e = 0;
+  let k = 0;
+  for (let i = 0; i < runs.length; i++) for (let j = i + 1; j < runs.length; j++) {
+    const o = diagramOverlap(runs[i]!, runs[j]!);
+    n += o.nodes;
+    e += o.edges;
+    k++;
+  }
+  return { nodes: n / k, edges: e / k };
 }
 
 /** Runs tasks with bounded concurrency (API rate limits; long meetings). */
@@ -433,8 +466,9 @@ async function main() {
       const ids = [...new Set(rs.flatMap((r) => r.results.map((c) => c.id)))];
       const stable = ids.filter((id) => new Set(rs.map((r) => r.results.find((c) => c.id === id)?.pass)).size === 1).length;
       const flaky = ids.filter((id) => new Set(rs.map((r) => r.results.find((c) => c.id === id)?.pass)).size > 1);
-      const nodeJ = meanPairwise(rs.map((r) => r.diagramNodes));
-      const edgeJ = meanPairwise(rs.map((r) => r.diagramEdges));
+      const overlap = meanPairwise(rs.map((r) => ({ nodes: r.diagramNodes, edges: r.diagramEdges })));
+      const nodeJ = overlap?.nodes ?? null;
+      const edgeJ = overlap?.edges ?? null;
       const line = {
         name,
         runs: rs.length,

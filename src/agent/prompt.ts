@@ -74,6 +74,8 @@ You return the COMPLETE intended diagram and overview every time (not a diff). C
 - Every component and edge has a basis: the ids of the items that put it in the design. Use accepted or tentative decisions and requirements. A part whose existence is agreed but whose technology is still open (e.g. "which store holds the logs" is an open question) is drawn with a generic name ("Delivery log store") and the open question in its basis (plus the decision that requires it); it is then shown as TBD. You may include components whose only basis is a proposed decision: they are hidden from the agreed diagram and shown only in the "proposals" view.
 - Edges: the main data and call flows between components, with a short verb label ("enqueue event", "POST webhook"). If traffic goes through an intermediary (a proxy, a queue), draw it through the intermediary, not around it.
 - Descriptions: one short clause (at most 15 words) on the component's role in the final design, consistent with the latest decisions. The decisions section carries the details; do not repeat them here.
+- Names: the concrete technology when the items name one ("SQS queue", "Postgres", "KMS", "Envoy gateway"), otherwise the role in two or three words ("Delivery worker", "Billing service"). Use the team's own words; never rename an existing component unless the technology changed.
+- Granularity: one component per system the items name or the flow requires; do not split one system into several, or add notification channels, dashboards or actors unless an item makes them part of the design.
 - ids: lowercase slugs prefixed "cmp-".
 - Keep it readable: typically 4-12 components.
 

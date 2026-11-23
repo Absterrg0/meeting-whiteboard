@@ -278,3 +278,31 @@ describe("rationale on revisions", () => {
     expect(h.try("update_item", { id: "dec-ttl", status: "accepted", reason: "back again" , ts: "", quote: "edited in UI" }, "human").ok).toBe(false);
   });
 });
+
+describe("stale-value guard", () => {
+  const base = () =>
+    new Harness().apply(
+      "record_item",
+      decision("dec-ttl", "accepted", "00:01:30", "Sessions expire after 7 days", { title: "Session lifetime: 7 days", detail: "Sessions expire after 7 days." }),
+    );
+
+  it("refuses a revision that leaves the old number in the title", () => {
+    const r = base().try("update_item", { id: "dec-ttl", detail: "Sessions expire after 14 days.", reason: "customers asked", ts: "00:03:35", quote: "Fine, 14 days" });
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.error).toMatch(/replaced value 7 still appears in the title/);
+    const ok = base().try("update_item", { id: "dec-ttl", title: "Session lifetime: 14 days", detail: "Sessions expire after 14 days.", reason: "customers asked", ts: "00:03:35", quote: "Fine, 14 days" });
+    expect(ok.ok).toBe(true);
+  });
+
+  it("catches number words in the rationale", () => {
+    const r = new Harness()
+      .apply("record_item", decision("dec-ttl", "accepted", "00:01:30", "Sessions expire after 7 days", { title: "Session lifetime", detail: "Sessions expire after 7 days." }))
+      .try("update_item", { id: "dec-ttl", detail: "Sessions expire after 14 days.", rationale: "seven felt too short", reason: "customers asked", ts: "00:03:35", quote: "Fine, 14 days" });
+    expect(r.ok).toBe(false);
+  });
+
+  it("ignores numbers that did not change", () => {
+    const h = new Harness().apply("record_item", decision("dec-r", "accepted", "00:01:30", "Sessions expire after 7 days", { title: "Retries for 24 hours", detail: "Retry for 24 hours, 3 attempts." }));
+    expect(h.try("update_item", { id: "dec-r", detail: "Retry for 24 hours, 5 attempts.", reason: "more attempts", ts: "00:03:35", quote: "Fine, 14 days" }).ok).toBe(true);
+  });
+});

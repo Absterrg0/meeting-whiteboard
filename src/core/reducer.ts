@@ -139,6 +139,42 @@ function pin(item: Item, ctx: ApplyContext) {
   item.pinnedAfterIdx = ctx.transcript.length;
 }
 
+const NUMBER_WORDS: Record<string, number> = {
+  zero: 0, one: 1, two: 2, three: 3, four: 4, five: 5, six: 6, seven: 7, eight: 8, nine: 9, ten: 10,
+  eleven: 11, twelve: 12, thirteen: 13, fourteen: 14, fifteen: 15, sixteen: 16, seventeen: 17, eighteen: 18,
+  nineteen: 19, twenty: 20, thirty: 30, forty: 40, fifty: 50, sixty: 60, seventy: 70, eighty: 80, ninety: 90,
+  hundred: 100, thousand: 1000,
+};
+
+/** The numbers a text states, digits or words ("5", "five", "1.5"). */
+export function numbersIn(text: string): Set<number> {
+  const out = new Set<number>();
+  for (const m of text.toLowerCase().matchAll(/\b(\d+(?:\.\d+)?)\b|\b([a-z]+)\b/g)) {
+    if (m[1]) out.add(Number(m[1]));
+    else if (m[2] && m[2] in NUMBER_WORDS) out.add(NUMBER_WORDS[m[2]]!);
+  }
+  return out;
+}
+
+/**
+ * Stale-value guard. When a value is revised (3 days -> 5 days), the numbers that left
+ * the statement must not survive in the item's title or rationale, where the doc would
+ * still show them. Deterministic, so an old value can't linger whatever the model writes.
+ */
+function checkRetiredValues(before: string, after: string, places: { title: string; rationale: string | null }) {
+  const now = numbersIn(after);
+  const retired = [...numbersIn(before)].filter((n) => !now.has(n));
+  if (!retired.length) return;
+  for (const [where, text] of [["title", places.title], ["rationale", places.rationale ?? ""]] as const) {
+    const left = retired.filter((n) => numbersIn(text).has(n));
+    if (left.length) {
+      fail(
+        `the replaced value ${left.join(", ")} still appears in the ${where} ("${text}"); state only the current value there (the old value is kept in the changelog automatically)`,
+      );
+    }
+  }
+}
+
 const recordItem: Handler<RecordItem> = (state, input, ctx) => {
   if (state.items[input.id]) fail(`id '${input.id}' already exists; use update_item to change it`);
   checkStatus(input.kind, input.status);
@@ -165,6 +201,9 @@ const recordItem: Handler<RecordItem> = (state, input, ctx) => {
     pinnedAfterIdx: null,
   };
   pin(item, ctx);
+  if (input.revised_from && ctx.source === "agent") {
+    checkRetiredValues(input.revised_from, item.detail, { title: item.title, rationale: item.reason });
+  }
   if (input.revised_from) {
     item.history.push({
       ts: ev.ts,
@@ -240,6 +279,10 @@ const updateItem: Handler<UpdateItem> = (state, input, ctx) => {
   } else if (detailChanged) {
     item.reason = null;
   }
+  const detailChange = changes.find((c) => c.field === "detail");
+  if (detailChange && ctx.source === "agent") {
+    checkRetiredValues(detailChange.from ?? "", item.detail, { title: item.title, rationale: item.reason });
+  }
   item.history.push(...changes);
   item.evidence.push(ev);
   item.updatedAt = ev.ts;
@@ -265,6 +308,9 @@ const supersedeItem: Handler<SupersedeItem> = (state, input, ctx) => {
   if (oldItem.status === "rejected") fail(`'${oldItem.id}' was rejected; it cannot also be superseded`);
   if (!["accepted", "tentative", "open"].includes(newItem.status)) {
     fail(`replacement '${newItem.id}' must be accepted, tentative or open (it is ${newItem.status}); update it first`);
+  }
+  if (ctx.source === "agent") {
+    checkRetiredValues(oldItem.detail, newItem.detail, { title: newItem.title, rationale: newItem.reason });
   }
   if (!ALLOWED_STATUSES[oldItem.kind].includes("superseded")) {
     fail(`a ${oldItem.kind} cannot be superseded; resolve or drop it with update_item`);
