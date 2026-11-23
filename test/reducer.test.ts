@@ -272,8 +272,8 @@ describe("rationale on revisions", () => {
 
   it("refuses to revive a superseded item in place", () => {
     const h = base()
-      .apply("record_item", decision("dec-pg", "accepted", "00:05:30", "Agreed, Postgres for sessions"))
-      .apply("supersede_item", { old_id: "dec-ttl", new_id: "dec-pg", reason: "one less system", ts: "00:05:30", quote: "Agreed, Postgres for sessions" });
+      .apply("record_item", decision("dec-postgres", "accepted", "00:05:30", "Agreed, Postgres for sessions"))
+      .apply("supersede_item", { old_id: "dec-ttl", new_id: "dec-postgres", reason: "one less system", ts: "00:05:30", quote: "Agreed, Postgres for sessions" });
     expect(h.try("update_item", { id: "dec-ttl", status: "accepted", reason: "back again", ts: "00:08:20", quote: "Not deciding that today" }).ok).toBe(false);
     expect(h.try("update_item", { id: "dec-ttl", status: "accepted", reason: "back again" , ts: "", quote: "edited in UI" }, "human").ok).toBe(false);
   });
