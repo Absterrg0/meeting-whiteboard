@@ -312,10 +312,16 @@ describe("topics", () => {
       .apply("upsert_topic", { id: "top-session-store", title: "Session store", question: "Where do sessions live?", ts: "00:00:30", quote: "What if we used Redis" })
       .apply("record_item", decision("dec-redis", "accepted", "00:01:30", "we're going with Redis", { topic: "top-session-store" }));
 
-  it("keeps one live decision per topic: a second accepted answer is refused", () => {
-    const r = withTopic().try("record_item", decision("dec-postgres", "accepted", "00:05:30", "Agreed, Postgres for sessions", { topic: "top-session-store" }));
-    expect(r.ok).toBe(false);
-    if (!r.ok) expect(r.error).toMatch(/already has a live decision 'dec-redis'.*supersede_item/);
+  it("keeps one live decision per topic: a second accepted answer is kept as a proposal, then a supersede promotes it", () => {
+    const h = withTopic().apply("record_item", decision("dec-postgres", "accepted", "00:05:30", "Agreed, Postgres for sessions", { topic: "top-session-store" }));
+    expect(h.state.items["dec-postgres"]!.status).toBe("proposed");
+    expect(h.state.items["dec-redis"]!.status).toBe("accepted");
+    expect(h.events.at(-1)!.summary).toMatch(/Recorded as PROPOSED.*supersede_item dec-redis -> dec-postgres/);
+    h.apply("supersede_item", { old_id: "dec-redis", new_id: "dec-postgres", reason: "one less system", ts: "00:05:30", quote: "Agreed, Postgres for sessions" });
+    expect(h.state.items["dec-postgres"]!.status).toBe("accepted");
+    // Accepting it directly while the other answer is live is still refused.
+    const h2 = withTopic().apply("record_item", decision("dec-postgres", "proposed", "00:05:30", "Agreed, Postgres for sessions", { topic: "top-session-store" }));
+    expect(h2.try("update_item", { id: "dec-postgres", status: "accepted", reason: "agreed", ts: "00:05:30", quote: "Agreed, Postgres for sessions" }).ok).toBe(false);
   });
 
   it("supersede promotes a proposed replacement and keeps it in the topic", () => {

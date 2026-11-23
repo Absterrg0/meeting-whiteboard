@@ -173,6 +173,12 @@ function checkRelated(state: DocState, related: string[] | undefined) {
   for (const r of related ?? []) if (!state.items[r]) fail(`related id '${r}' does not exist`);
 }
 
+/** Statuses the model reaches for that mean the same as an allowed one. */
+function normalizeStatus(kind: Item["kind"], status: Item["status"]): Item["status"] {
+  if (kind === "decision" && status === "dropped") return "rejected";
+  return status;
+}
+
 function checkStatus(kind: Item["kind"], status: Item["status"]) {
   if (!ALLOWED_STATUSES[kind].includes(status)) {
     fail(`status '${status}' is not valid for a ${kind}; use one of: ${ALLOWED_STATUSES[kind].join(", ")}`);
@@ -375,6 +381,19 @@ const recordItem: Handler<RecordItem> = (state, input, ctx) => {
   }
   // A reversal in one call: record as proposed, then supersede the old answer with it.
   const finalStatus = item.status;
+  // A second live answer in a topic is never created. Without `replaces`, the new decision
+  // is kept as a proposal (and the tool result says so), so the usual "record, then
+  // supersede" sequence in one response works first time instead of costing a retry.
+  let downgraded: string | null = null;
+  if (!input.replaces && item.kind === "decision" && item.topic && ["accepted", "tentative"].includes(item.status)) {
+    const live = Object.values(state.items).find(
+      (i) => i.kind === "decision" && i.topic === item.topic && ["accepted", "tentative"].includes(i.status),
+    );
+    if (live) {
+      item.status = "proposed";
+      downgraded = live.id;
+    }
+  }
   if (input.replaces) {
     if (item.kind !== "decision") fail("replaces is only for decisions");
     item.status = "proposed";
@@ -407,6 +426,10 @@ const recordItem: Handler<RecordItem> = (state, input, ctx) => {
     targets: [item.id],
     summary: `Added ${item.kind.replace("_", " ")} "${item.title}" as ${item.status}${owner}.${
       input.revised_from ? ` Revised during the discussion from: "${input.revised_from}".` : ""
+    }${
+      downgraded
+        ? ` Recorded as PROPOSED because topic '${item.topic}' already has the live answer '${downgraded}'. If this replaces it, call supersede_item ${downgraded} -> ${item.id}; if it is a separate choice, move it to its own topic (update_item topic).`
+        : ""
     }`,
     kind: createdTopic ? (item.kind === "decision" && ["accepted", "tentative"].includes(item.status) ? "decided" : itemKind(item, false, false)) : input.revised_from ? "revised" : item.kind === "decision" && ["accepted", "tentative"].includes(item.status) ? "decided" : itemKind(item, false, false),
   };
@@ -417,6 +440,7 @@ const updateItem: Handler<UpdateItem> = (state, input, ctx) => {
   const ev = evidenceFor(ctx, input.ts, input.quote);
   checkPinned(item, ctx, ev);
   if (input.status === "superseded") fail("use supersede_item to supersede an item");
+  if (input.status) input.status = normalizeStatus(item.kind, input.status);
   if (input.status) checkStatus(item.kind, input.status);
   checkRelated(state, input.related);
   if (item.status === "superseded" && input.status !== undefined) {
