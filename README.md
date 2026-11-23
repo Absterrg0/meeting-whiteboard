@@ -154,7 +154,7 @@ Each configuration was run on all 9 meetings (21 to 34 checks each, 231 in total
 
 What v3 adds over v2 is not visible in these totals, which were already high. It's in the shape of the doc (one section per question, history per topic), in stability (diagram components matched across runs went from 0.27–1.0 to 0.67–1.0), and in failure modes v2 had. Under v2, a reversal could leave two contradictory "decided" items, and a revised number could survive in a related item; under v3 the reducer and the cross-item check make both structurally impossible or flagged.
 
-**Blind test.** GPT-6 also wrote one more meeting (a video transcoding pipeline, plain `Name: text` lines without timestamps) plus an answer key, from the README only (`final-test/`). The system's doc matched every accepted decision, final value, open question, tentative item and action item in the key. That includes a declined action picked up by someone else, a lease revised from 10 to 2 minutes, and an "initial attempt plus two retries" policy. All five rejected options were recorded with their reasons, and nothing from the key's "must not appear" list appeared.
+**Blind test.** GPT-6 also wrote one more meeting (a video transcoding pipeline, plain `Name: text` lines without timestamps) plus an answer key, from the README only (`final-test/`). In a run at 4× speed, the doc matched every accepted decision, final value and action item in the key, including a declined action picked up by someone else, a lease revised from 10 to 2 minutes, and an "initial attempt plus two retries" policy. Nothing from the key's "must not appear" list appeared. It was not perfect: one rejected option (FIFO queues) was not recorded as rejected; in a faster 15× run, two of the five open questions were missed; and the diagram lacked the workers' write of outputs to storage.
 
 The weakest meeting is still the one with interleaved topics (22/27 in the final run), where pronouns ("that one", "the second option") and topics that resume much later stress the turn-by-turn judgement. The checks that still fail are mostly subtle. An action item someone declined isn't always recorded as declined. In one 120-minute run, a component the team dropped late stayed in the diagram. On the interleaved meeting, a security topic deferred "to another meeting" is sometimes recorded as decided.
 
@@ -207,4 +207,12 @@ test/           unit tests             docs/live-sources.md      live input deta
 
 ## How the time was spent
 
-_To be filled in._
+About six hours in total, from the commit history:
+
+- **~45 min: design** before any code. Reading the brief, choosing the architecture (typed state + operations + reducer, doc and diagram rendered from state), the stack (TypeScript, Vercel AI SDK) and the evaluation plan.
+- **14:00–14:45: core.** State, operations, reducer with grounding, renderers, first agent loop, server and live UI, first held-out meetings, eval harness and unit tests.
+- **14:45–16:15: agent v2 and testing.** Scribe and editor split, append-only cached conversation, a hard test set written by another model family, transcript formats, live audio, stale-value guards.
+- **16:15–17:45: v3.** Topic-centred core, Notion-style UI, cost and lag work (per-role models), undo over the event log, cross-item stale checks, meeting-bot providers.
+- **17:45–18:45: decision layer and final benchmark.** The Jev layer, topic filing, speaker diarization, the blind meeting, 225/231.
+- **18:45–19:30: a real call.** A self-hosted Attendee bot in Google Meet, with real names, per-participant speech-to-text, and polling, retries and failover so a dropped tunnel can't lose lines.
+

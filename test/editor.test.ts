@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { reconcile, screenOverview, staleTerms, type Plan } from "../src/agent/editor.js";
+import { firstSentences, reconcile, screenOverview, staleTerms, type Plan } from "../src/agent/editor.js";
 import { Harness, decision } from "./helpers.js";
 
 function base() {
@@ -78,5 +78,10 @@ describe("overview screening", () => {
   it("drops sentences that mention a stale option", () => {
     const out = screenOverview("Sessions live in Postgres. Redis was considered first. Retention is open.", ["redis"]);
     expect(out).toBe("Sessions live in Postgres. Retention is open.");
+  });
+
+  it("keeps dotted tokens (H.264, 1.4x, v1.2) inside their sentence", () => {
+    expect(screenOverview("Workers encode H.264 at 1.4x speed. Kafka was considered. Next is v1.2.", ["kafka"])).toBe("Workers encode H.264 at 1.4x speed. Next is v1.2.");
+    expect(firstSentences("Workers use H.264. Next. Third.", 2, 200)).toBe("Workers use H.264. Next.");
   });
 });

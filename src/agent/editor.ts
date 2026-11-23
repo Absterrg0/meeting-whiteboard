@@ -135,11 +135,19 @@ export function staleTerms(state: DocState): string[] {
   return [...stale];
 }
 
+/** Splits at sentence ends followed by whitespace, so "H.264", "1.4x", "v1.2" stay whole. */
+export function splitSentences(text: string): string[] {
+  return text
+    .trim()
+    .split(/(?<=[.!?])\s+/)
+    .filter(Boolean);
+}
+
 /** Drops overview sentences that mention a stale term. */
 export function screenOverview(overview: string, stale: string[]): string {
   if (!stale.length) return overview.trim();
   const re = new RegExp(`\\b(${stale.map((w) => w.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("|")})\\b`, "i");
-  return (overview.match(/[^.!?]+[.!?]+(\s|$)|[^.!?]+$/g) ?? [overview])
+  return splitSentences(overview)
     .map((s) => s.trim())
     .filter((s) => s && !re.test(s))
     .join(" ");
@@ -147,7 +155,7 @@ export function screenOverview(overview: string, stale: string[]): string {
 
 /** Keeps at most `n` sentences and `maxChars` characters, cutting at a sentence boundary. */
 export function firstSentences(text: string, n: number, maxChars: number): string {
-  const parts = text.match(/[^.!?]+[.!?]+(\s|$)|[^.!?]+$/g) ?? [text];
+  const parts = splitSentences(text).map((p, i, all) => (i < all.length - 1 ? `${p} ` : p));
   let out = "";
   for (const p of parts.slice(0, n)) {
     if ((out + p).length > maxChars && out) break;
