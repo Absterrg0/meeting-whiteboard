@@ -29,6 +29,8 @@ export type AttendeeTranscription = "captions" | "openai" | "deepgram";
 export interface AttendeeConfig {
   apiKey: string | null;
   baseUrl: string;
+  /** All routes to the same Attendee (ATTENDEE_BASE_URL can list several, comma-separated); the client fails over between them. */
+  baseUrls?: string[];
   /** Project webhook secret (Settings -> Webhooks in Attendee's UI), base64. Optional. */
   webhookSecret: string | null;
   /**
@@ -43,10 +45,15 @@ export interface AttendeeConfig {
 }
 
 export function attendeeConfig(env: NodeJS.ProcessEnv = process.env): AttendeeConfig {
+  const urls = (env.ATTENDEE_BASE_URL?.trim() || "http://localhost:8000")
+    .split(",")
+    .map((u) => u.trim().replace(/\/+$/, ""))
+    .filter(Boolean);
   const t = env.ATTENDEE_TRANSCRIPTION?.trim().toLowerCase();
   return {
     apiKey: env.ATTENDEE_API_KEY?.trim() || null,
-    baseUrl: (env.ATTENDEE_BASE_URL?.trim() || "http://localhost:8000").replace(/\/+$/, ""),
+    baseUrl: urls[0]!,
+    baseUrls: urls,
     webhookSecret: env.ATTENDEE_WEBHOOK_SECRET?.trim() || null,
     transcription: t === "deepgram" || t === "openai" ? t : "captions",
     webhookBaseUrl: env.ATTENDEE_WEBHOOK_BASE_URL?.trim().replace(/\/+$/, "") || null,
@@ -127,26 +134,43 @@ export class AttendeeClient {
    * page), so a brief tunnel drop doesn't fail a bot. GETs also retry other 5xx; a POST that
    * may have reached Attendee is not repeated, so a bot is never created twice.
    */
+  private active = 0;
+
+  private get bases(): string[] {
+    return this.cfg.baseUrls?.length ? this.cfg.baseUrls : [this.cfg.baseUrl];
+  }
+
   private async call<T>(method: string, path: string, body?: unknown): Promise<T> {
     const delays = (process.env.ATTENDEE_RETRY_MS ?? "500,1500,3000").split(",").map(Number);
-    for (let attempt = 0; ; attempt++) {
+    let failovers = 0;
+    for (let attempt = 0; ; ) {
+      const base = this.bases[this.active % this.bases.length]!;
       try {
-        return await this.callOnce<T>(method, path, body);
+        return await this.callOnce<T>(base, method, path, body);
       } catch (e) {
         const status = e instanceof AttendeeError ? e.status : 0;
         const undelivered = status === 530 || status === 521 || status === 523 || (e instanceof AttendeeError && e.message.startsWith("cannot reach"));
         const retry = undelivered || (method === "GET" && status >= 500);
-        if (!retry || attempt >= delays.length) throw e;
+        if (!retry) throw e;
+        // Another route first (it is the same Attendee, so this is safe even for a POST that never arrived).
+        if (undelivered && this.bases.length > 1 && failovers < this.bases.length - 1) {
+          this.active = (this.active + 1) % this.bases.length;
+          failovers++;
+          continue;
+        }
+        if (attempt >= delays.length) throw e;
         await new Promise((r) => setTimeout(r, delays[attempt]));
+        attempt++;
+        failovers = 0;
       }
     }
   }
 
-  private async callOnce<T>(method: string, path: string, body?: unknown): Promise<T> {
+  private async callOnce<T>(baseUrl: string, method: string, path: string, body?: unknown): Promise<T> {
     if (!this.cfg.apiKey) throw new AttendeeError("ATTENDEE_API_KEY is not set", 400);
     let res: Response;
     try {
-      res = await this.fetchImpl(`${this.cfg.baseUrl}/api/v1${path}`, {
+      res = await this.fetchImpl(`${baseUrl}/api/v1${path}`, {
         method,
         headers: {
           Authorization: `Token ${this.cfg.apiKey}`,
@@ -156,7 +180,7 @@ export class AttendeeClient {
         body: body ? JSON.stringify(body) : undefined,
       });
     } catch (e) {
-      throw new AttendeeError(`cannot reach Attendee at ${this.cfg.baseUrl} (${(e as Error).message}); is its docker compose stack up?`, 502);
+      throw new AttendeeError(`cannot reach Attendee at ${baseUrl} (${(e as Error).message}); is its docker compose stack up?`, 502);
     }
     const text = await res.text();
     let data: unknown = null;

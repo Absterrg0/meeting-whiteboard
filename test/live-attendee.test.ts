@@ -12,6 +12,7 @@ import {
   signAttendeeWebhook,
   verifyAttendeeSignature,
 } from "../src/live/attendee.js";
+import { AttendeeClient } from "../src/live/attendee.js";
 import { BOT_WEBHOOK_PATHS, botNeedsTunnel, selectedProviderId } from "../src/live/bots.js";
 import { apiGuard } from "../src/live/guard.js";
 import { WEBHOOK_PATH } from "../src/live/recall.js";
@@ -302,5 +303,21 @@ describe("live routes with a fake Attendee API", () => {
     const r = await app.request("/api/bot", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ meeting_url: "https://zoom.us/j/1" }) });
     expect(r.status).toBe(502);
     expect(((await r.json()) as { error: string }).error).toMatch(/docker compose/);
+  });
+});
+
+describe("AttendeeClient failover", () => {
+  it("moves to the next base URL when a tunnel returns an error page, and stays there", async () => {
+    process.env.ATTENDEE_RETRY_MS = "1,1,1";
+    const hits: string[] = [];
+    const fetchImpl = (async (url: string) => {
+      hits.push(new URL(url).host);
+      if (url.startsWith("https://a.example")) return new Response("<!DOCTYPE html><html>tunnel error</html>", { status: 530 });
+      return new Response(JSON.stringify({ id: "bot_1", state: "joined_recording" }));
+    }) as typeof fetch;
+    const client = new AttendeeClient(attendeeConfig({ ATTENDEE_API_KEY: "k", ATTENDEE_BASE_URL: "https://a.example, https://b.example/" }), fetchImpl);
+    expect(await client.getBot("bot_1")).toMatchObject({ state: "joined_recording" });
+    await client.getBot("bot_1");
+    expect(hits).toEqual(["a.example", "b.example", "b.example"]);
   });
 });
