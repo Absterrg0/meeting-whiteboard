@@ -224,3 +224,42 @@ describe("consolidation", () => {
     expect(quietModes).toHaveLength(0);
   });
 });
+
+describe("undo (state as a fold over the event log)", () => {
+  async function sessionWith(ops: import("../src/core/ops.js").Op[]) {
+    const { MeetingSession } = await import("../src/session.js");
+    const s = new MeetingSession({ agent: asAgent(new FakeAgent()), reviewOnFinish: false, manual: true });
+    s.addUtterance({ speaker: "Ana", text: "we're going with Redis for sessions", t: 10 });
+    s.addUtterance({ speaker: "Ben", text: "actually keep sessions in Postgres instead", t: 20 });
+    for (const op of ops) {
+      const r = s.humanEdit(op);
+      if (!r.ok) throw new Error(r.error);
+    }
+    return s;
+  }
+  const redis = { name: "record_item", input: { id: "dec-redis", kind: "decision", title: "Sessions: Redis", detail: "Sessions in Redis.", status: "accepted", topic: "top-sessions", topic_title: "Sessions", ts: "00:00:10", quote: "edited in UI" } } as const;
+  const pg = { name: "record_item", input: { id: "dec-pg", kind: "decision", title: "Sessions: Postgres", detail: "Sessions in Postgres.", status: "accepted", topic: "top-sessions", replaces: "dec-redis", reason: "one less system", ts: "00:00:20", quote: "edited in UI" } } as const;
+
+  it("undoing a reversal restores the earlier answer exactly", async () => {
+    const s = await sessionWith([redis, pg]);
+    expect(s.state.items["dec-redis"]!.status).toBe("superseded");
+    const reversal = s.events.find((e) => e.kind === "replaced")!;
+    const r = s.revert(reversal.seq);
+    expect(r.ok).toBe(true);
+    expect(s.state.items["dec-redis"]!.status).toBe("accepted");
+    expect(s.state.items["dec-pg"]).toBeUndefined();
+    expect(s.events.at(-1)).toMatchObject({ op: "undo", kind: "undo" });
+    const { currentSections } = await import("../src/eval.js");
+    expect(currentSections(s.markdown())).not.toMatch(/Postgres/);
+    expect(s.markdown()).toMatch(/Undid: .*Sessions: Postgres/);
+  });
+
+  it("undoing a change also undoes later changes that depended on it", async () => {
+    const s = await sessionWith([redis, pg]);
+    const first = s.events.find((e) => e.op === "record_item" && (e.input as { id: string }).id === "dec-redis")!;
+    const r = s.revert(first.seq);
+    expect(r.ok && r.undone.length).toBe(2); // the reversal of dec-redis can't apply without it
+    expect(Object.keys(s.state.items)).toEqual([]);
+    expect(s.revert(first.seq).ok).toBe(false); // already undone
+  });
+});

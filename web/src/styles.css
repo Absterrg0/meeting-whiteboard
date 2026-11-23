@@ -2614,3 +2614,15 @@ button.crumb:hover {
 .row > .wash {
   inset: 0;
 }
+
+/* Undo sits beside the quote toggle on hover. */
+.act-quote-toggle.act-undo {
+  right: 28px;
+}
+.act.open .act-quote-toggle.act-undo {
+  color: var(--fg-4);
+  background: none;
+}
+.act-error {
+  color: var(--rejected);
+}

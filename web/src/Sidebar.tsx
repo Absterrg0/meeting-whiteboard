@@ -1,8 +1,8 @@
-import { ArrowDown, CornerDownLeft, PanelRightClose, Quote } from "lucide-react";
+import { ArrowDown, CornerDownLeft, PanelRightClose, Quote, Undo2 } from "lucide-react";
 import { forwardRef, useEffect, useImperativeHandle, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import type { Utterance } from "../../src/core/types";
 import { buildActivity, type ActivityEntry } from "./activity";
-import type { LiveSnapshot } from "./api";
+import { api, type LiveSnapshot } from "./api";
 import type { LiveCapture } from "./audio";
 import { shortTs } from "./format";
 import { CaptureStatus, SpeakerChips, useCapture } from "./live";
@@ -12,8 +12,9 @@ export type SideTab = "activity" | "transcript";
 
 // ---------- activity ----------
 
-function ActivityRow({ e, onFocus, fresh }: { e: ActivityEntry; onFocus: (id: string) => void; fresh: boolean }) {
+function ActivityRow({ e, onFocus, fresh, onUndo }: { e: ActivityEntry; onFocus: (id: string) => void; fresh: boolean; onUndo: (seq: number) => Promise<string | null> }) {
   const [open, setOpen] = useState(false);
+  const [undoError, setUndoError] = useState<string | null>(null);
   const compact = e.tone === "diagram";
   return (
     <li className={`act${compact ? " compact" : ""}${fresh ? " is-fresh" : ""}${open ? " open" : ""}`}>
@@ -33,6 +34,7 @@ function ActivityRow({ e, onFocus, fresh }: { e: ActivityEntry; onFocus: (id: st
           ) : (
             e.detail && <div className="act-detail clamp">{e.detail}</div>
           ))}
+        {undoError && <div className="act-detail act-error">{undoError}</div>}
         {open && e.quote && (
           <blockquote className="act-quote">
             “{e.quote.text}”
@@ -44,6 +46,16 @@ function ActivityRow({ e, onFocus, fresh }: { e: ActivityEntry; onFocus: (id: st
           </blockquote>
         )}
       </div>
+      {e.undoSeq !== null && (
+        <button
+          className="act-quote-toggle act-undo"
+          title="Undo this change (and anything that depended on it)"
+          aria-label="Undo"
+          onClick={async () => setUndoError(await onUndo(e.undoSeq!))}
+        >
+          <Undo2 size={12} />
+        </button>
+      )}
       {e.quote && (
         <button className="act-quote-toggle" onClick={() => setOpen((o) => !o)} aria-expanded={open} title={open ? "Hide quote" : "Show what was said"} aria-label="Quote">
           <Quote size={12} />
@@ -54,6 +66,14 @@ function ActivityRow({ e, onFocus, fresh }: { e: ActivityEntry; onFocus: (id: st
 }
 
 function Activity({ snap, fresh, now, onFocus }: { snap: LiveSnapshot; fresh: FreshMap; now: number; onFocus: (id: string) => void }) {
+  const onUndo = async (seq: number): Promise<string | null> => {
+    try {
+      await api.undo(snap.id, seq);
+      return null;
+    } catch (err) {
+      return (err as Error).message;
+    }
+  };
   const entries = useMemo(() => buildActivity(snap.events, snap.state, snap.transcript), [snap.events, snap.state, snap.transcript]);
   const [limit, setLimit] = useState(80);
   if (entries.length === 0) {
@@ -67,7 +87,7 @@ function Activity({ snap, fresh, now, onFocus }: { snap: LiveSnapshot; fresh: Fr
   return (
     <ol className="activity">
       {entries.slice(0, limit).map((e, i) => (
-        <ActivityRow key={e.key} e={e} onFocus={onFocus} fresh={latestFresh && i === 0} />
+        <ActivityRow key={e.key} e={e} onFocus={onFocus} fresh={latestFresh && i === 0} onUndo={onUndo} />
       ))}
       {entries.length > limit && (
         <li className="act-more">

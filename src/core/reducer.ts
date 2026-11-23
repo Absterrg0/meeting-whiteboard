@@ -24,6 +24,7 @@ import {
   ALLOWED_STATUSES,
   type ChangeEvent,
   type ChangeKind,
+  emptyState,
   type DocState,
   type Evidence,
   type HistoryEntry,
@@ -52,6 +53,43 @@ class OpError extends Error {}
 
 function fail(msg: string): never {
   throw new OpError(msg);
+}
+
+/**
+ * Rebuild the state as a fold over the event log, skipping reverted events. Each event is
+ * re-validated by the same reducer; an event that no longer applies (it depended on one
+ * that was undone) is returned in `dropped`. This is what makes undo exact.
+ */
+export function replay(
+  events: ChangeEvent[],
+  transcript: Utterance[],
+  skip: Set<number>,
+): { state: DocState; dropped: ChangeEvent[] } {
+  let state = emptyState();
+  const dropped: ChangeEvent[] = [];
+  // Undo events name what they undid (also when reloaded from events.jsonl, without flags).
+  const undone = new Set(skip);
+  for (const e of events) {
+    if (e.op !== "undo") continue;
+    const input = e.input as { seq?: number; dependents?: number[] };
+    if (typeof input.seq === "number") undone.add(input.seq);
+    for (const d of input.dependents ?? []) undone.add(d);
+  }
+  for (const e of events) {
+    if (e.reverted || undone.has(e.seq) || e.op === "undo") continue;
+    const t = parseTs(e.ts);
+    const r = applyOp(state, { name: e.op, input: e.input } as Op, {
+      source: e.source,
+      // A human edit only "knows" the transcript said up to its time (for pinning).
+      transcript: e.source === "human" ? transcript.filter((u) => u.t <= t) : transcript,
+      meetingTime: t,
+      seq: e.seq,
+      now: () => e.at,
+    });
+    if (r.ok) state = r.state;
+    else dropped.push(e);
+  }
+  return { state, dropped };
 }
 
 export function applyOp(prev: DocState, op: Op, ctx: ApplyContext): ApplyResult {

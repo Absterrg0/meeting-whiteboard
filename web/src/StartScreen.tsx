@@ -353,7 +353,8 @@ export function StartScreen({ current, onReturn, onStarted }: StartProps) {
             </>
           )}
 
-          {mode === "bot" && <BotForm config={config} onError={fail} onJoined={(bot, id) => onStarted(id, { bot })} />}
+          {mode === "bot" && <BotProviderNote config={config} />}
+          {mode === "bot" && <BotForm config={botFormConfig(config)} onError={fail} onJoined={(bot, id) => onStarted(id, { bot })} />}
 
           {error && (
             <div className="form-error" role="alert">
@@ -388,5 +389,25 @@ export function StartScreen({ current, onReturn, onStarted }: StartProps) {
         )}
       </div>
     </div>
+  );
+}
+
+/** Provider-neutral bot fields of /api/live/config (src/live/routes.ts); absent on older servers. */
+type BotProviderConfig = { botProvider?: string; botProviderLabel?: string; botReady?: boolean; botSetupHint?: string | null };
+
+/** BotForm gates on `recall`; with a self-hosted provider selected, its readiness counts instead. */
+function botFormConfig(config: LiveConfig | null): LiveConfig | null {
+  const b = config as (LiveConfig & BotProviderConfig) | null;
+  return b && b.botProvider && b.botProvider !== "recall" && b.botReady ? { ...b, recall: true } : config;
+}
+
+function BotProviderNote({ config }: { config: LiveConfig | null }) {
+  const b = config as (LiveConfig & BotProviderConfig) | null;
+  if (!b?.botProvider) return null;
+  return (
+    <p className="hint">
+      Bot: {b.botProviderLabel ?? b.botProvider} (set <code>BOT_PROVIDER</code> in <code>.env</code> to change)
+      {!b.botReady && b.botSetupHint && b.botProvider !== "recall" ? ` — ${b.botSetupHint}` : ""}
+    </p>
   );
 }

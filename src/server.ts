@@ -26,6 +26,7 @@ import { apiGuard } from "./live/guard.js";
 import { BOT_WEBHOOK_PATHS, botNeedsTunnel } from "./live/bots.js";
 import { registerLiveRoutes } from "./live/routes.js";
 import { ensurePublicUrl, stopTunnel } from "./live/tunnel.js";
+import { configFromEnv, MeetingAgent } from "./agent/index.js";
 import { MeetingSession, percentile } from "./session.js";
 import { statePatch, type LiveDelta, type LiveHeader, type LiveSnapshot, type SavedSessionInfo } from "./wire.js";
 
@@ -220,6 +221,8 @@ async function openSaved(name: string): Promise<MeetingSession | null> {
   sessions.set(id, s);
   sessionMeta.set(id, { createdAt: statSync(join(dir, "state.json")).mtimeMs, readOnly: true });
   await s.finish(); // marks every line processed (the no-op agent) and stops the clock
+  // From here on, edits and undo are live: the editor keeps the diagram and summary in step.
+  s.attachAgent(new MeetingAgent(configFromEnv()));
   return s;
 }
 
@@ -495,6 +498,17 @@ app.post("/api/session/:id/edit", async (c) => {
   return c.json({ ok: true });
 });
 
+// Undo one change (agent or human). The state is rebuilt from the event log without it;
+// changes that depended on it are undone too and reported.
+app.post("/api/session/:id/undo", async (c) => {
+  const s = sessions.get(c.req.param("id"));
+  if (!s) return c.json({ error: "no such session" }, 404);
+  const body = await readJson<{ seq: number }>(c.req.raw);
+  const r = s.revert(Number(body.seq));
+  if (!r.ok) return c.json({ error: r.error }, 400);
+  return c.json({ ok: true, undone: r.undone });
+});
+
 app.get("/api/session/:id/doc.md", (c) => {
   const s = sessions.get(c.req.param("id"));
   if (!s) return c.json({ error: "no such session" }, 404);
@@ -567,6 +581,13 @@ app.get("/api/session/:id/events", (c) => {
       pending = setTimeout(() => void sendDelta(), wait);
     };
     s.on("change", onChange);
+    // Undo rewrites history (entities can disappear): resend everything.
+    const onReset = () => {
+      if (pending) clearTimeout(pending);
+      pending = null;
+      if (!closed) void sendFull();
+    };
+    s.on("reset", onReset);
     const heartbeat = setInterval(() => {
       if (!closed) void stream.writeSSE({ event: "ping", data: String(Date.now()) }).catch(() => (closed = true));
     }, 15_000);
@@ -579,6 +600,7 @@ app.get("/api/session/:id/events", (c) => {
         finished = true;
         closed = true;
         s.off("change", onChange);
+        s.off("reset", onReset);
         clearInterval(heartbeat);
         clearInterval(watch);
         if (pending) clearTimeout(pending);

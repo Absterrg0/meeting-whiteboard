@@ -193,6 +193,7 @@ export type ChangeKind =
   | "noted" // requirement, non-goal, fact, topic, meeting info
   | "confirmed" // low-confidence item confirmed
   | "diagram" // editor: components, edges, overview
+  | "undo" // a human undid a change
   | "other";
 
 export interface ChangeEvent {
@@ -210,6 +211,8 @@ export interface ChangeEvent {
   summary: string;
   /** The raw operation input, for replay/audit. */
   input: unknown;
+  /** Set when the change was undone (it is skipped when the state is rebuilt). */
+  reverted?: { at: string; by: number };
 }
 
 export function emptyState(): DocState {

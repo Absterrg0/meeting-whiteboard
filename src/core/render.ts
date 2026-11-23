@@ -280,6 +280,7 @@ function statusTs(i: Item): string {
  * New items and diagram churn are visible in the doc itself.
  */
 export function isNotable(e: ChangeEvent): boolean {
+  if (e.reverted) return false;
   if (e.source === "editor") return false;
   if (e.source === "human") return true;
   if (e.op === "update_item" || e.op === "supersede_item" || e.op === "confirm_item") return true;

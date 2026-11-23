@@ -22,6 +22,8 @@ export interface ActivityEntry {
   target: string | null;
   human: boolean;
   count: number;
+  /** The change this entry can undo (null for diagram runs and undo entries). */
+  undoSeq: number | null;
 }
 
 const KIND_FALLBACK: Record<string, ChangeKind> = {
@@ -69,17 +71,24 @@ const KIND_NOUN: Record<Item["kind"], string> = {
   action_item: "Action",
 };
 
-function describe(e: ChangeEvent, state: DocState): Omit<ActivityEntry, "key" | "seq" | "ts" | "quote" | "human" | "count"> | null {
+/**
+ * Items as they were when an event happened. The feed must show what was decided at
+ * the time ("limit: 100/min" at 01:25), not the item's current value, or the history
+ * would read as if the final value had been there all along.
+ */
+type ItemAt = (id: string) => Item | undefined;
+
+function describe(e: ChangeEvent, state: DocState, at: ItemAt): Omit<ActivityEntry, "key" | "seq" | "ts" | "quote" | "human" | "count" | "undoSeq"> | null {
   const kind = eventKind(e);
-  const items = e.targets.map((t) => state.items[t]).filter((x): x is Item => !!x);
+  const items = e.targets.map((t) => at(t)).filter((x): x is Item => !!x);
   const item = items.at(-1);
   const subject = subjectOf(state, item);
   const target = item?.id ?? e.targets.find((t) => state.topics[t]) ?? null;
   switch (kind) {
     case "replaced": {
       const input = (e.input ?? {}) as { old_id?: string; new_id?: string; reason?: string };
-      const oldI = state.items[input.old_id ?? e.targets[0] ?? ""];
-      const newI = state.items[input.new_id ?? e.targets[1] ?? ""];
+      const oldI = at(input.old_id ?? e.targets[0] ?? "");
+      const newI = at(input.new_id ?? e.targets[1] ?? "");
       const subj = subjectOf(state, newI ?? oldI);
       return {
         tone: "replaced",
@@ -139,6 +148,8 @@ function describe(e: ChangeEvent, state: DocState): Omit<ActivityEntry, "key" | 
     }
     case "diagram":
       return null; // folded separately
+    case "undo":
+      return { tone: "human", headline: "Undone", detail: e.summary.replace(/^Undid: /, ""), from: null, to: null, target: null };
     default:
       return { tone: "note", headline: "Updated", detail: e.summary, from: null, to: null, target };
   }
@@ -168,8 +179,34 @@ function diagramPhrase(events: ChangeEvent[], state: DocState): string {
   return parts.join(" · ");
 }
 
+const TRACKED = ["title", "detail", "status", "owner", "due", "reason", "topic"] as const;
+
 export function buildActivity(events: ChangeEvent[], state: DocState, transcript: Utterance[]): ActivityEntry[] {
   const out: ActivityEntry[] = [];
+  // Replay the item fields carried by each operation, in order, to know each item "as of" an event.
+  const asOf = new Map<string, Partial<Item>>();
+  const at: ItemAt = (id) => {
+    const cur = state.items[id];
+    if (!cur) return undefined;
+    return { ...cur, ...asOf.get(id) };
+  };
+  const track = (e: ChangeEvent) => {
+    const input = (e.input ?? {}) as Record<string, unknown>;
+    if (e.op === "record_item" || e.op === "update_item") {
+      const id = String(input.id ?? "");
+      const prev = asOf.get(id) ?? {};
+      const next: Partial<Item> = { ...prev };
+      for (const f of TRACKED) if (typeof input[f] === "string") (next as Record<string, unknown>)[f] = input[f];
+      if (e.op === "update_item" && typeof input.rationale === "string") next.reason = input.rationale;
+      asOf.set(id, next);
+    } else if (e.op === "supersede_item") {
+      const oldId = String(input.old_id ?? "");
+      asOf.set(oldId, { ...(asOf.get(oldId) ?? {}), status: "superseded" });
+      const newId = String(input.new_id ?? "");
+      const newStatus = typeof input.new_status === "string" ? input.new_status : "accepted";
+      asOf.set(newId, { ...(asOf.get(newId) ?? {}), status: newStatus as Item["status"] });
+    }
+  };
   let run: ChangeEvent[] = [];
   const flush = () => {
     if (!run.length) return;
@@ -190,16 +227,20 @@ export function buildActivity(events: ChangeEvent[], state: DocState, transcript
       target: onlyOverview ? "doc-summary" : "doc-diagram",
       human: run.some((e) => e.source === "human"),
       count: run.length,
+      undoSeq: null,
     });
     run = [];
   };
   for (const e of events) {
+    // Undone changes leave the feed; the "Undone" entry says what was taken back.
+    if (e.reverted) continue;
     if (eventKind(e) === "diagram") {
       run.push(e);
       continue;
     }
     flush();
-    const d = describe(e, state);
+    track(e);
+    const d = describe(e, state, at);
     if (!d) continue;
     const prev = out.at(-1);
     // The same item touched twice in a row reads as one change.
@@ -209,7 +250,16 @@ export function buildActivity(events: ChangeEvent[], state: DocState, transcript
       prev.quote = quoteOf(e, transcript) ?? prev.quote;
       continue;
     }
-    out.push({ ...d, key: `e${e.seq}`, seq: e.seq, ts: e.ts, quote: quoteOf(e, transcript), human: e.source === "human", count: 1 });
+    out.push({
+      ...d,
+      key: `e${e.seq}`,
+      seq: e.seq,
+      ts: e.ts,
+      quote: quoteOf(e, transcript),
+      human: e.source === "human",
+      count: 1,
+      undoSeq: e.op === "undo" ? null : e.seq,
+    });
   }
   flush();
   return out.reverse();

@@ -80,6 +80,8 @@ export const api = {
     }),
   edit: (id: string, op: UiOp) =>
     request<{ ok: true }>(`/api/session/${encodeURIComponent(id)}/edit`, { method: "POST", json: { op } }),
+  undo: (id: string, seq: number) =>
+    request<{ ok: true; undone: string[] }>(`/api/session/${encodeURIComponent(id)}/undo`, { method: "POST", json: { seq } }),
   saved: () => request<SavedSessionInfo[]>("/api/saved"),
   openSaved: (name: string) => request<{ id: string }>("/api/saved/open", { method: "POST", json: { name } }),
   docUrl: (id: string) => `/api/session/${encodeURIComponent(id)}/doc.md`,

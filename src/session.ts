@@ -21,7 +21,7 @@ import { join } from "node:path";
 import { performance } from "node:perf_hooks";
 import { MeetingAgent, emptyUsage, mergeUsage, type AgentRuntime, type ApplyFn, type Usage } from "./agent/index.js";
 import type { Op } from "./core/ops.js";
-import { applyOp } from "./core/reducer.js";
+import { applyOp, replay } from "./core/reducer.js";
 import { toMarkdown, toMermaid } from "./core/render.js";
 import { emptyState, formatTs, type ChangeEvent, type DocState, type Source, type Utterance } from "./core/types.js";
 
@@ -143,7 +143,7 @@ export class MeetingSession extends EventEmitter {
   metrics: Metrics = { lineLatency: [], diagramLag: [], turnSeconds: [], editorSeconds: [], turnLines: [], turnTiming: [], queueWait: [] };
   reviewOnFinish: boolean;
 
-  readonly agent: AgentRuntime;
+  agent: AgentRuntime;
   private processed = 0;
   private policy: SchedulePolicy;
   private outDir: string | null;
@@ -188,6 +188,15 @@ export class MeetingSession extends EventEmitter {
   meetingTime(): number {
     if (this.status !== "running" || this.manual) return this.clockBase;
     return this.clockBase + ((Date.now() - this.clockStart) / 1000) * this.speed;
+  }
+
+  /**
+   * Hand a loaded (finished) session a real agent and switch it to automatic scheduling,
+   * so human edits and undo keep the diagram and summary consistent (the editor runs).
+   */
+  attachAgent(agent: AgentRuntime) {
+    this.agent = agent;
+    this.manual = false;
   }
 
   /** Manual mode only: set the meeting clock. */
@@ -593,6 +602,43 @@ export class MeetingSession extends EventEmitter {
     if (affectsArchitecture(r.event, this.state)) this.markEditorDirty(this.meetingTime());
     this.changed();
     return { ok: true };
+  }
+
+  /**
+   * Undo one change. The state is a fold over the event log, so undo is exact: rebuild it
+   * from the log without that event. Later changes that relied on it no longer apply and
+   * are undone with it (reported). The undo itself is logged as an event, and the scribe is
+   * told so it doesn't simply record the same thing again.
+   */
+  revert(seq: number): { ok: true; undone: string[] } | { ok: false; error: string } {
+    const target = this.events.find((e) => e.seq === seq);
+    if (!target) return { ok: false, error: `no change #${seq}` };
+    if (target.reverted) return { ok: false, error: `change #${seq} was already undone` };
+    if (target.op === "undo") return { ok: false, error: "an undo can't be undone; make the change again instead" };
+    const { state, dropped } = replay(this.events, this.transcript, new Set([seq]));
+    const undoSeq = this.events.length + 1;
+    const at = new Date().toISOString();
+    for (const e of [target, ...dropped]) e.reverted = { at, by: undoSeq };
+    this.state = state;
+    const summary = `Undid: ${target.summary}${dropped.length ? ` (and ${dropped.length} later change${dropped.length === 1 ? "" : "s"} that depended on it)` : ""}`;
+    const ev: ChangeEvent = {
+      seq: undoSeq,
+      kind: "undo",
+      ts: formatTs(this.meetingTime()),
+      at,
+      source: "human",
+      op: "undo",
+      targets: target.targets,
+      summary,
+      input: { seq, dependents: dropped.map((d) => d.seq) },
+    };
+    this.events.push(ev);
+    this.notices.push(`[human undo] ${summary}. Don't record it again unless the meeting brings it up again.`);
+    this.persist([ev]);
+    if (this.agent.edit) this.markEditorDirty(this.meetingTime());
+    this.emit("reset");
+    this.changed();
+    return { ok: true, undone: [target.summary, ...dropped.map((d) => d.summary)] };
   }
 
   // ---------- output ----------
