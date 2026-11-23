@@ -10,7 +10,7 @@ It takes the meeting as it happens: a transcript replayed in real time (any comm
 
 ## Quick start
 
-Requirements: Node 20+, pnpm, and an Anthropic or OpenAI API key.
+Requirements: Node 20+, pnpm, and an Anthropic or OpenAI API key. Optional: `TYPESAFE_AI_API_KEY` turns on the fast decision layer, and `OPENAI_API_KEY` enables live mic/tab audio.
 
 ```bash
 pnpm install
@@ -42,8 +42,9 @@ pnpm test                                   # unit tests, no network
 ```bash
 MODEL=anthropic/claude-sonnet-5-5   EFFORT=medium   # default
 MODEL=anthropic/claude-opus-5-5     EFFORT=low
-MODEL=openai/gpt-6-luna             EFFORT=medium
-EDITOR_MODEL=...  EDITOR_EFFORT=...                 # optional: a different model for the diagram/summary
+MODEL=openai/gpt-6.1-sol            EFFORT=medium
+EDITOR_MODEL=...  EDITOR_EFFORT=...                 # optional: the diagram/summary model (default Haiku 5.5, low)
+REVIEW_MODEL=...                                    # optional: consolidation and final review (default: MODEL)
 ```
 
 The same flags work on the CLI and the eval: `--model`, `--effort`, `--editor-model`, `--editor-effort`.
@@ -70,7 +71,7 @@ Live sources (microphone, meeting tab, Recall.ai or Attendee bot) are described 
 
 The work is split by how fast and how globally each part has to think.
 
-**The scribe** (`src/agent/scribe.ts`) turns what is said into operations on **topics** and **items**: `upsert_topic`, `record_item`, `update_item`, `supersede_item`, `confirm_item`, `set_meeting_info`. A topic is one question the meeting works on ("Which queue carries deliveries?"). Every option, decision, open question and owner for that question hangs off it, and a topic can have **at most one live answer**: a second accepted decision in the same topic is refused, so changing an answer is always an explicit supersede, never two contradictory "decided" items.
+**The scribe** (`src/agent/scribe.ts`) turns what is said into operations on **topics** and **items**: `upsert_topic`, `record_item`, `update_item`, `supersede_item`, `confirm_item`, `set_meeting_info`. A topic is one question the meeting works on ("Which queue carries deliveries?"). Every option, decision, open question and owner for that question hangs off it, and a topic can have **at most one live answer**: a second accepted decision in the same topic is kept as a proposal until the old answer is superseded, so changing an answer is always an explicit supersede, never two contradictory "decided" items.
 - It runs after every speaker turn. Lines that arrive while it is busy go into its next turn, so a slow call never drops input or builds a queue.
 - It keeps **one append-only conversation per meeting**, so each turn sends only the new lines. Everything before them is a cached prefix, which keeps the time to first token and the cost flat as the meeting goes on. After 40 turns or 60k tokens it restarts from a snapshot of the state, so long meetings stay bounded.
 - Each tool call is **applied while the response is still streaming**, so the doc updates call by call. The model gets a second round only when a call fails validation.
@@ -150,10 +151,10 @@ Each configuration was run on all 9 meetings (21 to 34 checks each, 231 in total
 |---|---|---|---|---|
 | v2: flat item list, one agent for items, separate diagram editor (Sonnet 5.5) | 444/462 (96.1%) | 97% | ~2.2 s* | $0.79 |
 | v3: topics, consolidation, all roles on Sonnet 5.5 | 442/462 (95.7%) | 96% | ~3.3 s | $0.98 |
-| **v3 optimized (default)**: Sonnet 5.5 scribe, Haiku 5.5 editor, review at low effort, consolidation only after changes, one-call topic creation and reversals | **222/231 (96.1%)** | (1 run) | **~3.1 s** | **$0.51** |
+| **v3 optimized**: Sonnet 5.5 scribe, Haiku 5.5 editor, review at low effort, consolidation only after changes, one-call topic creation and reversals | **222/231 (96.1%)** | (1 run) | **~3.1 s** | **$0.51** |
 | v3 on GPT-6.1 Sol (OpenAI) | 430/462 (93.1%) | 94% | ~5.0 s | $0.59 |
 | Default + Jev decision layer (`TYPESAFE_AI_API_KEY` set), first run | 221/231 (95.7%) | (1 run) | ~3.3 s; accept/reject flips ~0.9 s | $0.51 |
-| **Final submitted version**: + topic filing from titles, a second live answer kept as a proposal, decline/deferral rules, Jev on | **225/231 (97.4%)**, 7 of 9 meetings at 100% | (1 run) | **~3.3 s; flips ~0.9 s** | **$0.48** |
+| **Final submitted version (default)**: + topic filing from titles, a second live answer kept as a proposal, decline/deferral rules, Jev on | **225/231 (97.4%)**, 7 of 9 meetings at 100% | (1 run) | **~3.3 s; flips ~0.9 s** | **$0.48** |
 | Budget option: Haiku 5.5 scribe, Sonnet 5.5 review (`MODEL=anthropic/claude-haiku-5-5 REVIEW_MODEL=anthropic/claude-sonnet-5-5`) | 219/231 (94.8%) | (1 run) | ~2.9 s | $0.15 |
 \* v2's simulation did not count the 0.6 s debounce.
 
@@ -182,19 +183,19 @@ The weakest meeting is still the one with interleaved topics (22/27 in the final
 - One meeting per session; the doc starts empty.
 - Agreement is judged from what people say, not from roles.
 - **Speakers on live audio.** Realtime transcription has no diarization, so each finished turn's audio is also sent to `gpt-4o-transcribe-diarize`. That call carries the reference clips of voices heard so far, so labels stay consistent across the meeting: Speaker 1, Speaker 2, and so on. Renaming "Speaker 1 → Lena" rewrites the past lines too. This adds about 4.6 s per live line. On a synthetic three-voice test, labels were fully correct in 2 of 4 runs; the failure was two similar voices merged. The "Speaking now" chips override it, and `DIARIZE=0` turns it off. The meeting bot gets real names from the platform instead.
-- **Meeting bot: buy before build.** Two providers sit behind one interface (`BOT_PROVIDER`). **Recall.ai** is hosted (about $0.65/hour), with zero ops and every platform. **Attendee** is self-hosted with Docker, gets transcripts free from meeting captions, and has real speaker names. Its licence is the Elastic License 2.0, not OSI open source: fine to self-host for our own use, not to resell. Vexa is Apache-2.0 but has no real-time push yet. Writing our own browser bot (Google sign-in, admission, caption scraping, Zoom's SDK review) is days of brittle work, so it wasn't the right use of the time. Attendee has been tested in a real Google Meet call, and its bot joins with real participant names. Meet's captions were too rough for design talk, so the bot now transcribes each participant's own audio with OpenAI `gpt-4o-transcribe` (`ATTENDEE_TRANSCRIPTION=openai`). The app **pulls** the bot's transcript from Attendee every 2.5 s and treats webhooks only as a fast path. Lines are deduplicated by key, so a dropped tunnel delays lines instead of losing them, and a bot still works with no public URL at all. Calls to Attendee retry when the request certainly never arrived (no connection, or a tunnel error page), so a bot is never created twice. Captions are still available as a free fallback; a growing caption line is held until it settles, so revisions aren't lost. Recall has only been tested against a simulator that follows its documented payloads.
-- **Local, single user.** The server binds to 127.0.0.1 and has no auth. Sessions persist to `out/<id>/` (state, event log, transcript) and can be reopened from the start screen.
+- **Meeting bot: buy before build.** Two providers sit behind one interface (`BOT_PROVIDER`). **Recall.ai** is hosted (about $0.65/hour), with zero ops and every platform. **Attendee** is self-hosted with Docker and has real speaker names; it transcribes each participant's audio (OpenAI) or reads the meeting's captions for free. Its licence is the Elastic License 2.0, not OSI open source: fine to self-host for our own use, not to resell. Vexa is Apache-2.0 but has no real-time push yet. Writing our own browser bot (Google sign-in, admission, caption scraping, Zoom's SDK review) is days of brittle work, so it wasn't the right use of the time. Attendee has been tested in a real Google Meet call: the bot joined and delivered lines with real participant names (captions mode). Meet's captions were too rough for design talk, so the bot now transcribes each participant's own audio with OpenAI `gpt-4o-transcribe` (`ATTENDEE_TRANSCRIPTION=openai`). The app **pulls** the bot's transcript from Attendee every 2.5 s and treats webhooks only as a fast path. Lines are deduplicated by key, so a dropped tunnel delays lines instead of losing them, and a bot still works with no public URL at all. Calls to Attendee retry when the request certainly never arrived (no connection, or a tunnel error page), so a bot is never created twice. Captions are still available as a free fallback; a growing caption line is held until it settles, so revisions aren't lost. Recall has only been tested against a simulator that follows its documented payloads.
+- **Local, single user.** The server binds to 127.0.0.1 and has no auth. One meeting runs at a time: starting or opening another session ends the current one. Sessions persist to `out/<id>/` (state, event log, transcript) and can be reopened from the start screen, but a live session does not resume after a server restart.
 
 ## What I would do next
 
-- **Better speaker separation**: grow each voice's reference from later confident turns, and confirm a match against only that voice's reference before accepting it. Or move diarization off the per-line path: show the line at once and correct the label when it returns.
+- **Better speaker separation on mixed audio** (the bot already gets exact names from the platform): match each stretch of speech to the voices heard so far with a dedicated speaker-embedding model (e.g. pyannote or TitaNet), growing each voice's reference only from confident matches; use name cues in the conversation ("thanks, Priya") as low-confidence suggestions to confirm in one click; and show each line at once with a provisional label, correcting it when the match returns, which removes the 4.6 s wait.
 - **More of the decision layer.** Jev already gates chatter and applies accept/reject flips (see Results). Next: route each line to its topic ("which existing topic?") and classify the change type, so the scribe gets a narrower job. This needs its own benchmark first, because these models judge options by name and struggle with what several records imply together, which is exactly the reversal case.
 - **Streaming bot audio**: take each participant's audio over Attendee's per-participant WebSocket into streaming speech-to-text, so lines appear word by word with names (today a line lands a second or two after the speaker pauses). Also read the meeting chat, so typed decisions count too.
 - **A review queue**: low-confidence changes are already flagged "to confirm"; next is to hold them out of the doc until confirmed when a team wants that.
-- **Diagram stability**: give the editor a canonical component inventory carried between meetings, and vote over two editor samples on borderline edges.
+- **More diagram stability**: ids and live components are already kept stable in code. Next: a canonical component inventory carried between meetings, a check that every flow a live decision states has an edge, and voting over two editor samples on borderline edges.
 - **Multi-meeting docs**: load a previous meeting's state as the baseline the next meeting revises.
 - **Bot infrastructure without tunnels.** On one machine there is no tunnel: the app polls Attendee on localhost. I ran Attendee on a separate server and reached it through free Cloudflare quick tunnels, which have no uptime guarantee; the app copes by pulling transcripts, failing over between routes and retrying, but that is resilience, not a design. In production the app and the bot workers run in the same private network, the app pulls Attendee's transcript with a cursor (webhooks only as a fast path, as now), and only the web UI is public, behind a real ingress (a load balancer with TLS, or a named tunnel with replicas). The session's event log lives in Postgres, so a server restart resumes a live meeting instead of dropping it.
-- **Production**: the event log in Postgres (the state is already a fold over it), auth, per-team docs, export to Notion/Confluence/GitHub (a PR when a decision changes), per-meeting cost caps, tracing, and a hosted bot fleet.
+- **Production**: auth, per-team docs, export to Notion/Confluence/GitHub (a PR when a decision changes), per-meeting cost caps, tracing, and a hosted bot fleet.
 
 ## Repository layout
 
@@ -219,5 +220,5 @@ About six hours in total, from the commit history:
 - **14:45–16:15: agent v2 and testing.** Scribe and editor split, append-only cached conversation, a hard test set written by another model family, transcript formats, live audio, stale-value guards.
 - **16:15–17:45: v3.** Topic-centred core, Notion-style UI, cost and lag work (per-role models), undo over the event log, cross-item stale checks, meeting-bot providers.
 - **17:45–18:45: decision layer and final benchmark.** The Jev layer, topic filing, speaker diarization, the blind meeting, 225/231.
-- **18:45–19:30: a real call.** A self-hosted Attendee bot in Google Meet, with real names, per-participant speech-to-text, and polling, retries and failover so a dropped tunnel can't lose lines.
+- **18:45–19:55: a real call and hardening.** A self-hosted Attendee bot in Google Meet with real names, per-participant speech-to-text, polling, retries and failover so a dropped tunnel can't lose lines, same-machine setup without tunnels, an independent end-to-end review against the brief, and the fixes it found (prompt examples, summary splitting, diagram stability).
 
