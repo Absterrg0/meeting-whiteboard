@@ -183,11 +183,8 @@ The weakest meeting is still the one with interleaved topics (22/27 in the final
 ## What I would do next
 
 - **Better speaker separation**: grow each voice's reference from later confident turns, and confirm a match against only that voice's reference before accepting it. Or move diarization off the per-line path: show the line at once and correct the label when it returns.
-- **A fast decision layer** (e.g. TypeSafe AI's Jev, a "System 1" model that picks among given options in about 0.2 s at a fraction of LLM cost):
-  - Use it for the routing calls: "does this line change the doc: none / proposal / agreement / rejection / reversal / revision / question / action?" and "which existing topic?".
-  - With high confidence, chatter skips the scribe entirely, which is a big saving on long meetings, and a pure status flip ("works for me" → accept the open proposal) is applied without an LLM.
-  - The LLM keeps the writing; the reducer and guards stay unchanged.
-  - Not done tonight. It needs its own benchmark, because published evaluations say these models judge options by name and struggle with what several records imply together, which is exactly our reversal case.
+- **More of the decision layer.** Jev already gates chatter and applies accept/reject flips (see Results). Next: route each line to its topic ("which existing topic?") and classify the change type, so the scribe gets a narrower job. This needs its own benchmark first, because these models judge options by name and struggle with what several records imply together, which is exactly the reversal case.
+- **Streaming bot audio**: take each participant's audio over Attendee's per-participant WebSocket into streaming speech-to-text, so lines appear word by word with names (today a line lands a second or two after the speaker pauses). Also read the meeting chat, so typed decisions count too.
 - **A review queue**: low-confidence changes are already flagged "to confirm"; next is to hold them out of the doc until confirmed when a team wants that.
 - **Diagram stability**: give the editor a canonical component inventory carried between meetings, and vote over two editor samples on borderline edges.
 - **Multi-meeting docs**: load a previous meeting's state as the baseline the next meeting revises.
