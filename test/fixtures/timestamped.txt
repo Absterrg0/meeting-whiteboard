@@ -1,0 +1,6 @@
+[00:00:05] Tomás: Morning all.
+[00:02:20] Tomás Ruiz: Rough sketch: billing emits an event.
+00:03:00 Ben: no brackets
+[04:10] Cara: mm:ss only
+Dana (00:05:30): name first, time in parentheses
+[00:06:00.250] Eli: with milliseconds

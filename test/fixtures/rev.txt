@@ -1,0 +1,8 @@
+Aisha Khan (00:00:04):
+Right now if a tech loses signal in a basement the app blocks.
+
+Keiko Sato (00:00:21):
+We need an outbox on the device. SQLite with a sync queue.
+
+Rohan Mehta (00:01:10):
+Agreed, SQLite outbox.

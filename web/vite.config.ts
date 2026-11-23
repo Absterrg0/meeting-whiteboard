@@ -18,7 +18,7 @@ export default defineConfig({
     // The web app imports shared types/constants from ../src.
     fs: { allow: [projectRoot] },
     proxy: {
-      "/api": { target: "http://localhost:8787", changeOrigin: true },
+      "/api": { target: "http://localhost:8787", changeOrigin: true, ws: true },
     },
   },
 });

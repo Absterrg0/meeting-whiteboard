@@ -1,15 +1,36 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { formatTs, parseTs } from "../../src/core/types";
-import { api, type Snapshot, type TranscriptInfo, type UiOp } from "./api";
+import { api, type BotView, type LiveConfig, type ParseInfo, type Snapshot, type TranscriptInfo, type UiOp } from "./api";
+import { LiveCapture, type LiveMode } from "./audio";
 import { Changelog } from "./Changelog";
 import { Decisions } from "./Decisions";
 import { DocView } from "./DocView";
+import { LiveBar } from "./LiveBar";
 import { MermaidView } from "./Mermaid";
 import { Transcript } from "./Transcript";
 
 const PASTE = "__paste__";
 const SPEEDS = [1, 5, 10, 30];
 type Tab = "diagram" | "decisions" | "changelog";
+type LiveChoice = LiveMode | "bot";
+const LIVE_CHOICES: { value: LiveChoice; label: string; title: string }[] = [
+  { value: "type", label: "Type lines", title: "Start an empty meeting and type lines yourself" },
+  { value: "mic", label: "Microphone", title: "Transcribe this computer's microphone (in-room meeting)" },
+  { value: "tab", label: "Meeting tab audio", title: "Share a Google Meet / Zoom / Teams browser tab with its audio" },
+  { value: "tab+mic", label: "Meeting tab + my mic", title: "Remote participants from the tab, you from the mic (use headphones)" },
+  { value: "bot", label: "Bot joins a meeting", title: "A Recall.ai bot joins the call and streams named speakers" },
+];
+const LIVE_KEY = "mwb.liveMode";
+const FILE_TYPES = ".vtt,.srt,.txt,.md,.json,.jsonl,text/vtt,text/plain,application/json";
+
+function loadLiveChoice(): LiveChoice {
+  try {
+    const v = localStorage.getItem(LIVE_KEY);
+    return LIVE_CHOICES.some((c) => c.value === v) ? (v as LiveChoice) : "type";
+  } catch {
+    return "type";
+  }
+}
 
 /** Subscribe to a session's snapshot stream. */
 function useSession(id: string | null) {
@@ -62,6 +83,14 @@ export function App() {
   const [focusTs, setFocusTs] = useState<{ ts: string; n: number } | null>(null);
   const [starting, setStarting] = useState(false);
   const fileInput = useRef<HTMLInputElement>(null);
+  const [liveChoice, setLiveChoice] = useState<LiveChoice>(loadLiveChoice);
+  const [capture, setCapture] = useState<LiveCapture | null>(null);
+  const [showBot, setShowBot] = useState(false);
+  const [bot, setBot] = useState<BotView | null>(null);
+  const [liveConfig, setLiveConfig] = useState<LiveConfig | null>(null);
+  const [parseInfo, setParseInfo] = useState<ParseInfo | null>(null);
+  const [parseError, setParseError] = useState<string | null>(null);
+  const [fileName, setFileName] = useState<string | null>(null);
 
   const { snap, receivedAt, connected } = useSession(sessionId);
 
@@ -85,7 +114,59 @@ export function App() {
       .current()
       .then(({ id }) => id && setSessionId((cur) => cur ?? id))
       .catch(() => undefined);
+    api
+      .liveConfig()
+      .then(setLiveConfig)
+      .catch(() => undefined);
+    // Reattach to a bot that is still in a call after a reload.
+    api
+      .bots()
+      .then((list) => {
+        const active = list.filter((b) => !b.left).at(-1);
+        if (active) setBot(active);
+      })
+      .catch(() => undefined);
   }, []);
+
+  // Detect the format of pasted / uploaded content as it changes.
+  useEffect(() => {
+    if (!pasted.trim()) {
+      setParseInfo(null);
+      setParseError(null);
+      return;
+    }
+    let cancelled = false;
+    // Never show the previous content's result while the new one is being checked.
+    setParseInfo(null);
+    setParseError(null);
+    const t = setTimeout(() => {
+      api
+        .parse(pasted)
+        .then((info) => {
+          if (cancelled) return;
+          setParseInfo(info);
+          setParseError(null);
+        })
+        .catch((e: Error) => {
+          if (cancelled) return;
+          setParseInfo(null);
+          setParseError(e.message);
+        });
+    }, 300);
+    return () => {
+      cancelled = true;
+      clearTimeout(t);
+    };
+  }, [pasted]);
+
+  // The meeting is over: stop sending audio.
+  useEffect(() => {
+    if (snap?.status === "done" && capture?.active) void capture.stop();
+  }, [snap?.status, capture]);
+
+  const stopAudio = useCallback(async () => {
+    if (capture) await capture.stop();
+  }, [capture]);
 
   const report = useCallback((e: unknown) => {
     setError(e instanceof Error ? e.message : String(e));
@@ -94,6 +175,8 @@ export function App() {
   const start = async (live: boolean) => {
     setStarting(true);
     setError(null);
+    await stopAudio();
+    setCapture(null);
     try {
       const body = live
         ? { live: true }
@@ -105,6 +188,53 @@ export function App() {
       setSessionSpeed(live ? 1 : speed);
       setSessionId(id);
     } catch (e) {
+      report(e);
+    } finally {
+      setStarting(false);
+    }
+  };
+
+  const chooseLive = (c: LiveChoice) => {
+    setLiveChoice(c);
+    try {
+      localStorage.setItem(LIVE_KEY, c);
+    } catch {
+      /* storage unavailable */
+    }
+  };
+
+  /** Go live with the chosen source. Audio is requested first, inside the click (browsers require a gesture). */
+  const goLive = async () => {
+    setError(null);
+    if (liveChoice === "type") return start(true);
+    if (liveChoice === "bot") {
+      setShowBot(true);
+      if (!liveConfig) api.liveConfig().then(setLiveConfig).catch(report);
+      return;
+    }
+    if (liveConfig && !liveConfig.openai) {
+      setError("Live audio needs OPENAI_API_KEY in the server's .env (it stays on the server).");
+      return;
+    }
+    setStarting(true);
+    await stopAudio();
+    let cap: LiveCapture | null = null;
+    try {
+      let micLabel = "";
+      try {
+        micLabel = localStorage.getItem("mwb.speaker") ?? "";
+      } catch {
+        /* storage unavailable */
+      }
+      cap = await LiveCapture.acquire(liveChoice, micLabel);
+      const { id } = await api.create({ live: true, title: "Live meeting" });
+      setIsLive(true);
+      setSessionSpeed(1);
+      setSessionId(id);
+      setCapture(cap);
+      await cap.start(id);
+    } catch (e) {
+      if (cap) void cap.stop();
       report(e);
     } finally {
       setStarting(false);
@@ -150,12 +280,20 @@ export function App() {
 
   const onFile = async (f: File | undefined) => {
     if (!f) return;
+    if (f.size > 20_000_000) {
+      setError(`${f.name} is too large (${Math.round(f.size / 1e6)} MB); transcripts are text files.`);
+      return;
+    }
+    setFileName(f.name);
     setPasted(await f.text());
     setSource(PASTE);
+    if (fileInput.current) fileInput.current.value = "";
   };
 
   const status = snap?.status ?? "idle";
-  const canStart = source === PASTE ? pasted.trim().length > 0 : !!source;
+  const canStart = source === PASTE ? pasted.trim().length > 0 && !parseError : !!source;
+  const liveTitle = LIVE_CHOICES.find((c) => c.value === liveChoice)?.title;
+  const speakersSeen = snap ? [...new Set(snap.transcript.map((u) => u.speaker))] : [];
   const pending = snap ? snap.transcript.length - snap.processedCount : 0;
 
   return (
@@ -216,8 +354,20 @@ export function App() {
             Finish
           </button>
           <span className="divider" />
-          <button className="btn" disabled={starting} onClick={() => void start(true)} title="Start an empty meeting and type lines yourself">
-            ● Live
+          <select
+            value={liveChoice}
+            onChange={(e) => chooseLive(e.target.value as LiveChoice)}
+            aria-label="Live source"
+            title={liveTitle}
+          >
+            {LIVE_CHOICES.map((c) => (
+              <option key={c.value} value={c.value}>
+                {c.label}
+              </option>
+            ))}
+          </select>
+          <button className="btn live-btn" disabled={starting} onClick={() => void goLive()} title={liveTitle}>
+            ● Go live
           </button>
         </div>
 
@@ -248,29 +398,81 @@ export function App() {
 
       {source === PASTE && (!snap || status === "done") && (
         <div className="paste">
-          <textarea
-            placeholder={
-              'Paste a transcript: JSONL ({"time","speaker","text"} per line), a JSON array, "[00:01:10] Name: text" lines, or a markdown table.'
-            }
-            value={pasted}
-            onChange={(e) => setPasted(e.target.value)}
-            rows={4}
-          />
+          <div className="paste-main">
+            <textarea
+              placeholder={
+                "Paste or drop a transcript: Zoom / Teams .vtt, .srt, Otter or Fireflies .txt, Google Meet transcript, Zoom chat, JSONL / JSON, \"[00:01:10] Name: text\" lines, a markdown table, or plain \"Name: text\" lines."
+              }
+              value={pasted}
+              onChange={(e) => {
+                setPasted(e.target.value);
+                setFileName(null);
+              }}
+              onDragOver={(e) => e.preventDefault()}
+              onDrop={(e) => {
+                const f = e.dataTransfer.files?.[0];
+                if (f) {
+                  e.preventDefault();
+                  void onFile(f);
+                }
+              }}
+              rows={4}
+            />
+            {parseError ? (
+              <div className="parse-status bad" role="alert">
+                {parseError}
+              </div>
+            ) : parseInfo ? (
+              <div className="parse-status ok">
+                ✓ {fileName ? `${fileName}: ` : ""}
+                {parseInfo.formatLabel} · {parseInfo.utterances} utterance{parseInfo.utterances === 1 ? "" : "s"} ·{" "}
+                {parseInfo.speakers.length} speaker{parseInfo.speakers.length === 1 ? "" : "s"}
+                {parseInfo.timing !== "given" && (
+                  <span className="badge tiny warn-badge" title="Times were estimated from utterance length (~2.5 words/s)">
+                    {parseInfo.timing === "synthetic" ? "times estimated" : "some times estimated"}
+                  </span>
+                )}
+                {parseInfo.warnings
+                  .filter((w) => !/estimated/.test(w))
+                  .map((w) => (
+                    <span key={w} className="muted"> · {w}</span>
+                  ))}
+                {parseInfo.preview[0] && (
+                  <span className="muted preview">
+                    {" "}
+                    — {parseInfo.preview[0].ts} {parseInfo.preview[0].speaker}: “{parseInfo.preview[0].text}”
+                  </span>
+                )}
+              </div>
+            ) : null}
+          </div>
           <div className="paste-side">
             <button className="btn small" onClick={() => fileInput.current?.click()}>
               Upload file…
             </button>
-            <input
-              ref={fileInput}
-              type="file"
-              accept=".jsonl,.json,.txt,.md,text/plain"
-              hidden
-              onChange={(e) => void onFile(e.target.files?.[0])}
-            />
+            <input ref={fileInput} type="file" accept={FILE_TYPES} hidden onChange={(e) => void onFile(e.target.files?.[0])} />
             <span className="muted small">{pasted ? `${pasted.split(/\n/).filter(Boolean).length} lines` : ""}</span>
           </div>
         </div>
       )}
+
+      <LiveBar
+        capture={capture}
+        onStopAudio={() => void stopAudio()}
+        speakersSeen={speakersSeen}
+        showBot={showBot}
+        bot={bot}
+        onBot={setBot}
+        onCloseBot={() => setShowBot(false)}
+        config={liveConfig}
+        sessionId={snap && snap.status !== "done" && snap.mode === "live" ? sessionId : null}
+        onSession={(id) => {
+          setIsLive(true);
+          setSessionSpeed(1);
+          setSessionId(id);
+        }}
+        onError={report}
+      />
 
       {error && (
         <div className="error-bar" role="alert">

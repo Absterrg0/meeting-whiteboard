@@ -1,0 +1,19 @@
+Webhooks design review - Transcript
+Attendees
+Marcus Lee, Priya Raman, Tomás Ruiz
+Transcript
+00:00:00
+
+Priya Raman: Okay, let's get going. Goal today is to agree the design for outbound webhooks.
+Marcus Lee: Customers want us to notify their systems when an invoice is paid.
+Tomás Ruiz: Do we sign the payloads?
+Priya Raman: Yes, HMAC with a per-endpoint secret.
+
+00:05:00
+
+Marcus Lee: For the queue, I'd go with SQS.
+Priya Raman: Agreed, SQS it is.
+
+Transcription ended after 00:06:12
+
+This editable transcript was computer generated and might contain errors. People can also change the text after it was created.

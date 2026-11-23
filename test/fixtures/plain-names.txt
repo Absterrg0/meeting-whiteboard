@@ -1,0 +1,5 @@
+Nadia: Is anyone else's laptop stuck on that update?
+Joon: Mine finished overnight, sorry.
+Nadia: Lucky. OK, quick one: rate limiting for the public API. Partners keep hammering us during their nightly syncs, and the database falls over around two in the morning most weeks.
+Joon: Token bucket per key.
+Nadia: Let's go with a token bucket.

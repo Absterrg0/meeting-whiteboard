@@ -17,7 +17,12 @@ import { Hono } from "hono";
 import { streamSSE } from "hono/streaming";
 import { isOpName, type Op } from "./core/ops.js";
 import { formatTs } from "./core/types.js";
-import { parseTranscript } from "./ingest/transcript.js";
+import { parseTranscriptDetailed, TranscriptParseError, type ParseResult } from "./ingest/transcript.js";
+import { attachAudioRelay } from "./live/audioRelay.js";
+import { apiGuard } from "./live/guard.js";
+import { WEBHOOK_PATH } from "./live/recall.js";
+import { registerLiveRoutes } from "./live/routes.js";
+import { ensurePublicUrl, stopTunnel } from "./live/tunnel.js";
 import { MeetingSession } from "./session.js";
 
 const ROOT = process.cwd();
@@ -25,22 +30,53 @@ const TRANSCRIPTS_DIR = resolve(ROOT, "transcripts");
 const DIST_DIR = resolve(ROOT, "dist");
 const OUT_DIR = "out";
 const PORT = Number(process.env.PORT ?? 8787);
-const TRANSCRIPT_EXT = /\.(jsonl|json|txt|md)$/i;
+const TRANSCRIPT_EXT = /\.(jsonl|json|txt|md|vtt|srt)$/i;
 
 const sessions = new Map<string, MeetingSession>();
 
 function listTranscripts(): { name: string; utterances: number }[] {
   if (!existsSync(TRANSCRIPTS_DIR)) return [];
   return readdirSync(TRANSCRIPTS_DIR)
-    .filter((f) => TRANSCRIPT_EXT.test(f))
+    .filter((f) => TRANSCRIPT_EXT.test(f) && !/^readme/i.test(f))
     .sort()
     .map((name) => {
       try {
-        return { name, utterances: parseTranscript(readFileSync(join(TRANSCRIPTS_DIR, name), "utf8")).length };
+        return { name, utterances: parseTranscriptDetailed(readFileSync(join(TRANSCRIPTS_DIR, name), "utf8")).utterances.length };
       } catch {
         return { name, utterances: 0 };
       }
-    });
+    })
+    .filter((t) => t.utterances > 0);
+}
+
+/** Summary of a parse for the UI (format, count, timing, warnings, first lines). */
+function parseInfo(r: ParseResult) {
+  return {
+    format: r.format,
+    formatLabel: r.formatLabel,
+    utterances: r.utterances.length,
+    timing: r.timing,
+    warnings: r.warnings,
+    preview: r.utterances.slice(0, 3).map((u) => ({ ts: u.ts, speaker: u.speaker, text: u.text.slice(0, 120) })),
+    speakers: [...new Set(r.utterances.map((u) => u.speaker))].slice(0, 30),
+  };
+}
+
+function disposeAll() {
+  for (const [id, old] of sessions) {
+    old.dispose();
+    sessions.delete(id);
+  }
+}
+
+function newSession(title: string, live: boolean): MeetingSession {
+  disposeAll();
+  const slug = (title || "live").toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "").slice(0, 40) || "session";
+  const id = `${slug}-${Date.now()}`;
+  const session = new MeetingSession({ id, outDir: OUT_DIR, title: title || "Live meeting" });
+  sessions.set(id, session);
+  if (live) session.startLive();
+  return session;
 }
 
 async function readJson<T>(req: Request): Promise<Partial<T>> {
@@ -55,26 +91,9 @@ const app = new Hono();
 
 // The server spends API budget, so other web pages must not be able to drive it:
 // POSTs must be JSON (forces a CORS preflight cross-origin) and same-origin when an Origin is sent.
-app.use("/api/*", async (c, next) => {
-  if (c.req.method === "POST") {
-    if (!(c.req.header("content-type") ?? "").includes("application/json")) {
-      return c.json({ error: "expected application/json" }, 415);
-    }
-    const origin = c.req.header("origin");
-    if (origin) {
-      const host = c.req.header("host");
-      let ok = false;
-      try {
-        const o = new URL(origin);
-        ok = o.host === host || ["localhost", "127.0.0.1"].includes(o.hostname);
-      } catch {
-        ok = false;
-      }
-      if (!ok) return c.json({ error: "cross-origin request refused" }, 403);
-    }
-  }
-  await next();
-});
+// Requests that arrive through a tunnel (for Recall) can only reach the Recall webhook, which is
+// protected by a per-bot token and, if configured, Recall's signature (src/live/recall.ts).
+app.use("*", apiGuard([WEBHOOK_PATH]));
 
 app.onError((err, c) => {
   console.error(err);
@@ -84,6 +103,17 @@ app.onError((err, c) => {
 app.get("/api/health", (c) => c.json({ ok: true, hasKey: !!process.env.ANTHROPIC_API_KEY }));
 
 app.get("/api/transcripts", (c) => c.json(listTranscripts()));
+
+/** Detect the format of pasted / uploaded content without starting a session. */
+app.post("/api/transcript/parse", async (c) => {
+  const body = await readJson<{ content: string }>(c.req.raw);
+  try {
+    return c.json(parseInfo(parseTranscriptDetailed(String(body.content ?? ""))));
+  } catch (e) {
+    if (e instanceof TranscriptParseError) return c.json({ error: e.message }, 400);
+    throw e;
+  }
+});
 
 /** The active session, so a reloaded page can reattach. */
 app.get("/api/current", (c) => {
@@ -112,29 +142,37 @@ app.post("/api/session", async (c) => {
     title ||= "Pasted transcript";
   }
 
-  const utterances = content ? parseTranscript(content) : [];
+  let parsed: ParseResult | null = null;
+  if (content) {
+    try {
+      parsed = parseTranscriptDetailed(content);
+    } catch (e) {
+      if (e instanceof TranscriptParseError) return c.json({ error: e.message }, 400);
+      throw e;
+    }
+  }
+  const utterances = parsed?.utterances ?? [];
   if (!live && utterances.length === 0) {
     return c.json({ error: "no utterances found; pass a transcript, transcript content, or live: true" }, 400);
   }
 
-  for (const [id, old] of sessions) {
-    old.dispose();
-    sessions.delete(id);
-  }
-
-  const slug = (title || "live").toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "").slice(0, 40) || "session";
-  const id = `${slug}-${Date.now()}`;
-  const session = new MeetingSession({ id, outDir: OUT_DIR, title: title || "Live meeting" });
-  sessions.set(id, session);
-
+  const session = newSession(title, live);
   const speed = Number(body.speed) > 0 ? Number(body.speed) : 1;
-  if (live) {
-    session.startLive();
-  } else {
-    session.replay(utterances, speed);
-  }
-  console.log(`session ${id}: ${live ? "live" : `replay ${utterances.length} lines at ${speed}x`}`);
-  return c.json({ id });
+  if (!live) session.replay(utterances, speed);
+  console.log(
+    `session ${session.id}: ${live ? "live" : `replay ${utterances.length} lines (${parsed!.formatLabel}, times ${parsed!.timing}) at ${speed}x`}`,
+  );
+  return c.json({ id: session.id, parse: parsed ? parseInfo(parsed) : null });
+});
+
+registerLiveRoutes(app, {
+  port: PORT,
+  getSession: (id) => sessions.get(id),
+  createLiveSession: (title) => {
+    const s = newSession(title, true);
+    console.log(`session ${s.id}: live (meeting bot)`);
+    return s;
+  },
 });
 
 app.get("/api/session/:id", (c) => {
@@ -292,8 +330,15 @@ const HOST = process.env.HOST ?? "127.0.0.1";
 const server = serve({ fetch: app.fetch, port: PORT, hostname: HOST }, (info) => {
   console.log(`meeting-whiteboard server on http://localhost:${info.port}`);
 });
+// Browser audio for live transcription (WebSocket on the same port).
+attachAudioRelay(server as unknown as import("node:http").Server, { getSession: (id) => sessions.get(id) });
+// With a Recall key and no PUBLIC_URL, open the quick tunnel now so it is reachable by the time a bot is sent.
+if (process.env.RECALL_API_KEY && !process.env.PUBLIC_URL && process.env.AUTO_TUNNEL !== "0") {
+  ensurePublicUrl(PORT).catch((e: Error) => console.warn(`tunnel not started: ${e.message.split("\n")[0]}`));
+}
 
 const shutdown = () => {
+  stopTunnel();
   for (const s of sessions.values()) s.dispose();
   server.close();
   process.exit(0);

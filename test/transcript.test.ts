@@ -57,21 +57,24 @@ describe("parseTranscript", () => {
     ]);
   });
 
-  it("fills missing times monotonically and assigns stable indices", () => {
-    const u = parseTranscript('{"time": "00:00:10", "speaker": "A", "text": "x"}\n{"speaker": "B", "text": "y"}\n{"speaker": "C", "text": "z"}');
-    expect(u.map((x) => [x.t, x.idx])).toEqual([
-      [10, 0],
-      [15, 1],
-      [20, 2],
+  it("fills missing times monotonically from utterance length, flags them synthetic, and assigns stable indices", () => {
+    const u = parseTranscript(
+      '{"time": "00:00:10", "speaker": "A", "text": "x"}\n{"speaker": "B", "text": "one two three four five six seven eight nine ten"}\n{"speaker": "C", "text": "z"}',
+    );
+    // A: 1 word -> min 1.5 s + 0.5 s gap; B: 10 words / 2.5 = 4 s + 0.5 s gap.
+    expect(u.map((x) => [x.t, x.idx, x.synthetic])).toEqual([
+      [10, 0, undefined],
+      [12, 1, true],
+      [16.5, 2, true],
     ]);
   });
 
   it("parses every shipped transcript into ordered, non-empty utterances", () => {
-    for (const f of readdirSync("transcripts").filter((n) => n.endsWith(".jsonl"))) {
+    for (const f of readdirSync("transcripts").filter((n) => /\.(jsonl|json|txt|md|vtt|srt)$/.test(n) && !/^readme/i.test(n))) {
       const content = readFileSync(`transcripts/${f}`, "utf8");
-      const lines = content.split("\n").filter((l) => l.trim()).length;
       const u = parseTranscript(content);
-      expect(u.length, f).toBe(lines);
+      if (f.endsWith(".jsonl")) expect(u.length, f).toBe(content.split("\n").filter((l) => l.trim()).length);
+      expect(u.length, f).toBeGreaterThan(0);
       for (let i = 1; i < u.length; i++) expect(u[i]!.t, `${f}#${i}`).toBeGreaterThanOrEqual(u[i - 1]!.t);
       expect(u.every((x) => x.speaker && x.text), f).toBe(true);
     }

@@ -1,0 +1,21 @@
+WEBVTT
+
+f3a1c2d4-8b1e-4a7a-9d2e-1c2b3a4d5e6f/12-0
+00:00:03.180 --> 00:00:06.450
+<v Aisha Khan>So the offline mode question is really about conflict</v>
+
+f3a1c2d4-8b1e-4a7a-9d2e-1c2b3a4d5e6f/12-1
+00:00:06.450 --> 00:00:09.020
+<v Aisha Khan>resolution when the tech comes back online.</v>
+
+f3a1c2d4-8b1e-4a7a-9d2e-1c2b3a4d5e6f/13-0
+00:00:10.300 --> 00:00:14.880
+<v Rohan Mehta>Last write wins is simplest. Ask R&amp;D &lt;eng&gt; if unsure.</v>
+
+f3a1c2d4-8b1e-4a7a-9d2e-1c2b3a4d5e6f/14-0
+00:00:18.900 --> 00:00:22.400
+<v Keiko Sato>I'd rather do per-field merges, because two techs edit the same job.</v>
+
+f3a1c2d4-8b1e-4a7a-9d2e-1c2b3a4d5e6f/15-0
+00:01:02.000 --> 00:01:05.500
+<v Aisha Khan>Okay, decided: per-field merge, last write wins only as a fallback.</v>

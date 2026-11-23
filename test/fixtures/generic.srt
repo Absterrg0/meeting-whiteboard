@@ -1,0 +1,23 @@
+1
+00:00:01,000 --> 00:00:03,500
+Welcome everyone, this is the search index review.
+
+2
+00:00:03,900 --> 00:00:06,200
+We want to move off the nightly batch job.
+
+3
+00:00:10,000 --> 00:00:13,000
+[Grace] Change data capture from Postgres is the proposal.
+
+4
+00:00:13,400 --> 00:00:16,000
+[Grace] Debezium into Kafka, then an indexer.
+
+5
+00:00:17,000 --> 00:00:19,250
+- Wei: How far behind can the index be?
+
+6
+00:00:20,000 --> 00:00:22,000
+[MUSIC]

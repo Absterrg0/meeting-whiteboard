@@ -1,0 +1,11 @@
+Grace Liu - 00:00
+Today is about getting the product search index off the nightly batch job.
+
+Wei Zhang - 00:41
+I'd propose change data capture. Debezium reading the Postgres WAL.
+
+Sofia Rossi - 02:15
+How far behind can the index be? Product said under a minute.
+
+Grace Liu - 03:02
+Okay. CDC with Debezium, target lag under sixty seconds.

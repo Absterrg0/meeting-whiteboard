@@ -1,0 +1,9 @@
+14:02:11 From Priya Raman to Everyone:
+	Agenda: queue choice, retries, signing
+14:03:40 From Marcus Lee to Everyone:
+	+1 to SQS
+	we already pay for it
+14:04:02 From Tomás to Priya Raman(Direct Message):
+	can we finish by half past?
+14:05:55 From Tomás to Everyone:
+	Retry count: 5 with backoff?

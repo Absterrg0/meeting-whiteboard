@@ -1,0 +1,7 @@
+Aisha Khan
+00:04
+Right now if a tech loses signal in a basement the app blocks.
+
+Keiko Sato
+00:21
+We need an outbox on the device.

@@ -1,0 +1,8 @@
+[
+  {"participant": {"id": 100, "name": "Priya Raman", "is_host": true, "platform": "desktop", "extra_data": {}},
+   "words": [{"text": "Let's", "start_timestamp": {"relative": 12.4, "absolute": "2026-11-23T10:00:12.400Z"}, "end_timestamp": {"relative": 12.7, "absolute": "2026-11-23T10:00:12.700Z"}},
+             {"text": "use", "start_timestamp": {"relative": 12.7, "absolute": "2026-11-23T10:00:12.700Z"}, "end_timestamp": {"relative": 12.9, "absolute": "2026-11-23T10:00:12.900Z"}},
+             {"text": "SQS.", "start_timestamp": {"relative": 12.9, "absolute": "2026-11-23T10:00:12.900Z"}, "end_timestamp": {"relative": 13.4, "absolute": "2026-11-23T10:00:13.400Z"}}]},
+  {"participant": {"id": 101, "name": "Marcus Lee", "is_host": false, "platform": "desktop", "extra_data": {}},
+   "words": [{"text": "Agreed.", "start_timestamp": {"relative": 15.0, "absolute": "2026-11-23T10:00:15.000Z"}, "end_timestamp": {"relative": 15.5, "absolute": "2026-11-23T10:00:15.500Z"}}]}
+]

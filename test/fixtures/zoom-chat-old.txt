@@ -1,0 +1,2 @@
+00:01:05	 From  Priya Raman : Agenda doc is linked in the invite
+00:02:40	 From  Marcus Lee : SQS console link: https://console.aws.amazon.com/sqs

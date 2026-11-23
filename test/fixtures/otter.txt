@@ -1,0 +1,14 @@
+Speaker 1  0:03
+Okay, so this is the rate limiting discussion for the public API.
+
+Nadia Petrova  0:12
+Partners keep hammering us during their nightly syncs. I think we want a token bucket per API key,
+something like a hundred requests per second with bursts.
+
+Joon Park  1:05
+Token bucket in Redis works. We already have a Redis cluster for sessions.
+
+Nadia Petrova  1:31
+Let's go with that. Joon, can you own the Redis script?
+
+Transcribed by https://otter.ai

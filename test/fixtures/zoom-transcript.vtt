@@ -1,0 +1,21 @@
+WEBVTT
+
+1
+00:00:02.120 --> 00:00:05.480
+Priya Raman: Okay, let's get started. Today is the webhook design.
+
+2
+00:00:05.900 --> 00:00:09.310
+Priya Raman: We need to pick a queue for the delivery workers.
+
+3
+00:00:11.020 --> 00:00:15.770
+Marcus Lee: I'd go with SQS. We already run it for billing.
+
+4
+00:00:16.400 --> 00:00:19.050
+Tomás: What about retries? We said three, right?
+
+5
+00:00:22.500 --> 00:00:26.900
+Priya Raman: Let's go with SQS and five retries with exponential backoff.

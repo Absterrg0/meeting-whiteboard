@@ -1,0 +1,4 @@
+{"meeting": "x", "segments": [
+  {"start_ms": 1500, "speaker": {"name": "Ana"}, "text": "First."},
+  {"start_ms": 64000, "speaker": {"name": "Ben"}, "text": "Second."}
+]}
