@@ -53,6 +53,8 @@ export type BotEvent =
       end: number | null;
       /** Set when a provider can re-send the same utterance; duplicates are dropped. */
       key?: string;
+      /** The text can still grow or be revised under the same key (live captions). */
+      partial?: boolean;
     }
   | { kind: "participant"; action: "join" | "leave"; name: string }
   | { kind: "status"; status: BotStatus };
@@ -164,7 +166,7 @@ export function attendeeProvider(env: NodeJS.ProcessEnv, fetchImpl: typeof fetch
     mapEvent(body) {
       const out: BotEvent[] = [];
       const u = mapAttendeeTranscript(body);
-      if (u) out.push({ kind: "utterance", speaker: u.speaker, text: u.text, start: u.start, end: u.end, key: u.key });
+      if (u) out.push({ kind: "utterance", speaker: u.speaker, text: u.text, start: u.start, end: u.end, key: u.key, partial: cfg.transcription === "captions" });
       const p = mapAttendeeParticipant(body);
       if (p) out.push({ kind: "participant", action: p.kind, name: p.name });
       const s = mapAttendeeStateChange(body);

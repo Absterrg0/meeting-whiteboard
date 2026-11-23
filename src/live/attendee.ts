@@ -24,13 +24,19 @@ import { createHmac, timingSafeEqual } from "node:crypto";
 
 export const ATTENDEE_WEBHOOK_PATH = "/api/attendee/webhook/";
 
+export type AttendeeTranscription = "captions" | "openai" | "deepgram";
+
 export interface AttendeeConfig {
   apiKey: string | null;
   baseUrl: string;
   /** Project webhook secret (Settings -> Webhooks in Attendee's UI), base64. Optional. */
   webhookSecret: string | null;
-  /** "captions" (free, from the meeting platform) or "deepgram" (key stored in Attendee's UI). */
-  transcription: "captions" | "deepgram";
+  /**
+   * "captions" (free, the platform's own captions), or real speech-to-text on each
+   * participant's own audio: "openai" (gpt-4o-transcribe) or "deepgram". The provider key is
+   * stored in Attendee (Settings -> Credentials), not here. Names come from the call either way.
+   */
+  transcription: AttendeeTranscription;
   /** Overrides the base URL Attendee posts webhooks to (e.g. http://host.docker.internal:8787). */
   webhookBaseUrl: string | null;
   language: string | null;
@@ -42,7 +48,7 @@ export function attendeeConfig(env: NodeJS.ProcessEnv = process.env): AttendeeCo
     apiKey: env.ATTENDEE_API_KEY?.trim() || null,
     baseUrl: (env.ATTENDEE_BASE_URL?.trim() || "http://localhost:8000").replace(/\/+$/, ""),
     webhookSecret: env.ATTENDEE_WEBHOOK_SECRET?.trim() || null,
-    transcription: t === "deepgram" ? "deepgram" : "captions",
+    transcription: t === "deepgram" || t === "openai" ? t : "captions",
     webhookBaseUrl: env.ATTENDEE_WEBHOOK_BASE_URL?.trim().replace(/\/+$/, "") || null,
     language: env.ATTENDEE_LANGUAGE?.trim() || null,
   };
@@ -54,7 +60,7 @@ export function attendeeCreateBotPayload(opts: {
   meetingUrl: string;
   botName: string;
   webhookUrl: string;
-  transcription?: "captions" | "deepgram";
+  transcription?: AttendeeTranscription;
   language?: string | null;
 }) {
   const isZoom = /(^|\.)zoom(gov)?\.(us|com)$/i.test(safeHost(opts.meetingUrl));
@@ -62,7 +68,9 @@ export function attendeeCreateBotPayload(opts: {
   const transcription_settings =
     opts.transcription === "deepgram"
       ? { deepgram: { language: lang ?? "en" } }
-      : {
+      : opts.transcription === "openai"
+        ? { openai: { model: process.env.ATTENDEE_OPENAI_MODEL?.trim() || "gpt-4o-transcribe", ...(lang ? { language: lang.split("-")[0]!.toLowerCase() } : {}) } }
+        : {
           meeting_closed_captions: {
             // e.g. ATTENDEE_LANGUAGE=en-US -> google_meet_language "en-US", teams_language "en-us".
             ...(lang ? { google_meet_language: lang, teams_language: lang.toLowerCase() } : {}),
@@ -75,7 +83,7 @@ export function attendeeCreateBotPayload(opts: {
     // We only need the transcript; "none" also avoids needing S3/Azure storage on a self-hosted instance.
     recording_settings: { format: "none" },
     // Zoom closed captions need Attendee's web adapter (the native SDK needs Zoom app credentials).
-    ...(isZoom && opts.transcription !== "deepgram" ? { zoom_settings: { sdk: "web" } } : {}),
+    ...(isZoom && (opts.transcription ?? "captions") === "captions" ? { zoom_settings: { sdk: "web" } } : {}),
     webhooks: [{ url: opts.webhookUrl, triggers: [...ATTENDEE_TRIGGERS] }],
     metadata: { source: "meeting-whiteboard" },
   };

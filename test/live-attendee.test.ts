@@ -157,6 +157,8 @@ class FakeSession implements LiveSession {
 }
 
 describe("live routes with a fake Attendee API", () => {
+  const settle = () => new Promise((r) => setTimeout(r, 30));
+  process.env.CAPTION_SETTLE_MS = "5";
   function setup(env: NodeJS.ProcessEnv = { BOT_PROVIDER: "attendee", ATTENDEE_API_KEY: "att-key", ATTENDEE_BASE_URL: "http://attendee.local:8000/" }) {
     const session = new FakeSession();
     const calls: { method: string; url: string; body: unknown; auth: string | null }[] = [];
@@ -199,10 +201,16 @@ describe("live routes with a fake Attendee API", () => {
     const hook = `${ATTENDEE_WEBHOOK_PATH}?token=${encodeURIComponent(token)}`;
 
     expect((await post(hook, participantEvent("bot_abc", "Marcus Lee", "join"), tunnel)).status).toBe(200);
+    // A caption line grows under one key: only the settled, newest text is added.
+    expect((await post(hook, transcriptUpdate("bot_abc", "Priya Raman", "Let's", 1732385000000, 500), tunnel)).status).toBe(200);
     expect((await post(hook, transcriptUpdate("bot_abc", "Priya Raman", "Let's use SQS.", 1732385000000, 2000), tunnel)).status).toBe(200);
+    expect(session.transcript).toHaveLength(0);
+    await settle();
     expect((await post(hook, transcriptUpdate("bot_abc", "Marcus Lee", "Fine by me.", 1732385003000, 1000, "16778241"), tunnel)).status).toBe(200);
-    // Same utterance re-sent (retry or caption revision): dropped.
+    await settle();
+    // The same line re-sent after it was added (a retried delivery): dropped.
     expect((await post(hook, transcriptUpdate("bot_abc", "Priya Raman", "Let's use SQS!", 1732385000000, 2500), tunnel)).status).toBe(200);
+    await settle();
     // First utterance ends "now" (t=100 -> start 98); the second keeps Attendee's spacing, clamped to the clock.
     expect(session.transcript.map(({ t, speaker, text }) => ({ t, speaker, text }))).toEqual([
       { t: 98, speaker: "Priya Raman", text: "Let's use SQS." },
@@ -239,6 +247,7 @@ describe("live routes with a fake Attendee API", () => {
     expect((await post(hook, ev, { "x-webhook-signature": signAttendeeWebhook(secret, { ...ev, trigger: "x" }) })).status).toBe(401);
     expect(session.transcript).toHaveLength(0);
     expect((await post(hook, ev, { "x-webhook-signature": signAttendeeWebhook(secret, ev) })).status).toBe(200);
+    await settle();
     expect(session.transcript.map((u) => u.speaker)).toEqual(["Ana"]);
   });
 

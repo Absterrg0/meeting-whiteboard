@@ -33,6 +33,8 @@ export interface LiveRouteDeps {
 export type LiveBotRecord = BotRecord & {
   provider: BotProviderId;
   seen: Set<string>;
+  /** Caption lines still growing, by key; added to the session once they settle. */
+  pending?: Map<string, { ev: UtteranceEvent; timer: ReturnType<typeof setTimeout> }>;
   /** Join attempts so far (the watchdog retries a stuck bot once). */
   attempts?: number;
   /** Why the bot could not get into the call, shown in the UI with the fallback. */
@@ -44,6 +46,9 @@ export type LiveBotRecord = BotRecord & {
 const MAX_WEBHOOK_BYTES = 1_000_000;
 const STATUS_CACHE_MS = 2000;
 const MAX_SEEN_KEYS = 5000;
+/** A caption line counts as finished after this long without an update. */
+const captionSettleMs = () => Number(process.env.CAPTION_SETTLE_MS ?? 1800);
+type UtteranceEvent = { speaker: string; text: string; start: number | null; end: number | null; key?: string };
 
 export function registerLiveRoutes(app: Hono, deps: LiveRouteDeps) {
   const env = deps.env ?? process.env;
@@ -259,18 +264,46 @@ export function registerLiveRoutes(app: Hono, deps: LiveRouteDeps) {
 
     rec.lastEventAt = new Date().toISOString();
     const session = deps.getSession(rec.sessionId);
+    const emitUtterance = (r: LiveBotRecord, ev: UtteranceEvent) => {
+      const s = deps.getSession(r.sessionId);
+      if (!s) return;
+      const u = { start: ev.start, end: ev.end } as MappedUtterance;
+      const t = meetingTimeFor(r, u, s.meetingTime(), s.transcript.at(-1)?.t ?? 0);
+      s.addUtterance({ speaker: ev.speaker, text: ev.text, t });
+      r.utterances++;
+      if (!r.participants.includes(ev.speaker)) r.participants.push(ev.speaker);
+    };
+    const flushPending = (r: LiveBotRecord, key: string) => {
+      const p = r.pending?.get(key);
+      if (!p) return;
+      clearTimeout(p.timer);
+      r.pending!.delete(key);
+      if (r.seen.size >= MAX_SEEN_KEYS) r.seen.clear();
+      r.seen.add(key);
+      emitUtterance(r, p.ev);
+    };
     for (const ev of provider.mapEvent(body)) {
       if (ev.kind === "utterance" && session) {
-        if (ev.key) {
-          if (rec.seen.has(ev.key)) continue; // retried delivery or a revised caption we already have
+        if (!ev.key) {
+          emitUtterance(rec, ev);
+          continue;
+        }
+        if (rec.seen.has(ev.key)) continue; // retried delivery of a line already added
+        if (!ev.partial) {
+          // Final text (speech-to-text on the participant's audio): add it at once.
           if (rec.seen.size >= MAX_SEEN_KEYS) rec.seen.clear();
           rec.seen.add(ev.key);
+          emitUtterance(rec, ev);
+          continue;
         }
-        const u = { start: ev.start, end: ev.end } as MappedUtterance;
-        const t = meetingTimeFor(rec, u, session.meetingTime(), session.transcript.at(-1)?.t ?? 0);
-        session.addUtterance({ speaker: ev.speaker, text: ev.text, t });
-        rec.utterances++;
-        if (!rec.participants.includes(ev.speaker)) rec.participants.push(ev.speaker);
+        // Captions arrive as a growing, revised line under one key ("How are you?" -> "How are
+        // you? Okay, so let's start..."). Keep the newest text and add the line once it settles:
+        // when the same speaker starts a new line, or after captionSettleMs() without an update.
+        const pending = (rec.pending ??= new Map());
+        for (const [k, p] of pending) if (k !== ev.key && p.ev.speaker === ev.speaker) flushPending(rec, k);
+        const prev = pending.get(ev.key);
+        if (prev) clearTimeout(prev.timer);
+        pending.set(ev.key, { ev, timer: setTimeout(() => flushPending(rec, ev.key!), captionSettleMs()) });
       } else if (ev.kind === "participant") {
         if (ev.action === "join" && !rec.participants.includes(ev.name)) rec.participants.push(ev.name);
       } else if (ev.kind === "status") {
