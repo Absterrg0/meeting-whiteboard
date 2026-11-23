@@ -248,6 +248,9 @@ interface TranscriptReport {
   latencyP50: number | null;
   latencyP90: number | null;
   diagramLagP50: number | null;
+  gated?: number;
+  flips?: number;
+  flipLatencyP50?: number | null;
   /** Visible diagram components (by name) and edges, for cross-run stability. */
   diagramNodes: string[];
   diagramEdges: string[];
@@ -306,6 +309,9 @@ async function evalOne(name: string, config: AgentConfig, stamp: string, run: nu
     latencyP50: percentile(s.metrics.lineLatency, 50),
     latencyP90: percentile(s.metrics.lineLatency, 90),
     diagramLagP50: percentile(s.metrics.diagramLag, 50),
+    gated: s.metrics.gated,
+    flips: s.metrics.flips,
+    flipLatencyP50: percentile(s.metrics.flipLatency, 50),
     diagramNodes: visible.map((c) => normName(c.name)),
     diagramEdges,
   };
@@ -448,7 +454,7 @@ async function main() {
       const r = await t();
       const failed = r.results.filter((c) => !c.pass).map((c) => c.id);
       console.log(
-        `[done] ${r.name} run ${r.run}: ${r.passed}/${r.total}, $${r.agentCostUsd.toFixed(3)}, p50 ${fmt(r.latencyP50)}s${failed.length ? `, failed: ${failed.join(", ")}` : ""}${r.error ? `, ERROR ${r.error.split("\n")[0]}` : ""}`,
+        `[done] ${r.name} run ${r.run}: ${r.passed}/${r.total}, $${r.agentCostUsd.toFixed(3)}, p50 ${fmt(r.latencyP50)}s${r.flips || r.gated ? `, gated ${r.gated}, flips ${r.flips} (p50 ${fmt(r.flipLatencyP50 ?? null)}s)` : ""}${failed.length ? `, failed: ${failed.join(", ")}` : ""}${r.error ? `, ERROR ${r.error.split("\n")[0]}` : ""}`,
       );
       appendFileSync(partialFile, JSON.stringify(r) + "\n");
       return r;

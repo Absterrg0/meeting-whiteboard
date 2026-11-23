@@ -2,12 +2,14 @@
  * The meeting agent = scribe (fast, per speaker turn, records items) + editor (debounced,
  * keeps the diagram and overview consistent with the items). See scribe.ts and editor.ts.
  */
+import { Decider, deciderFromEnv, type Triage } from "./decider.js";
 import { Editor, type EditInput } from "./editor.js";
 import type { Effort } from "./llm.js";
 import { Scribe, type StepInput, type StepResult } from "./scribe.js";
 
 export type { ApplyFn, StepInput, StepResult } from "./scribe.js";
 export type { EditInput } from "./editor.js";
+export type { Triage } from "./decider.js";
 export { emptyUsage, mergeUsage, type Usage } from "./llm.js";
 
 export interface AgentConfig {
@@ -68,6 +70,8 @@ export interface AgentRuntime {
   config: { model: string; editorModel?: string };
   step(input: StepInput): Promise<StepResult>;
   edit?(input: EditInput): Promise<StepResult>;
+  /** Optional fast decision layer, called before each scribe turn. */
+  decide?(state: StepInput["state"], transcript: StepInput["transcript"], fresh: StepInput["fresh"], signal?: AbortSignal): Promise<Triage>;
 }
 
 export class MeetingAgent implements AgentRuntime {
@@ -78,11 +82,16 @@ export class MeetingAgent implements AgentRuntime {
    */
   readonly reviewer: Scribe;
   readonly editor: Editor;
+  readonly decider: Decider | null;
   constructor(public config: AgentConfig = configFromEnv()) {
     this.scribe = new Scribe(config);
     this.reviewer = new Scribe(config);
     this.editor = new Editor({ model: config.editorModel, effort: config.editorEffort });
+    const d = deciderFromEnv();
+    this.decider = d ? new Decider(d) : null;
+    if (this.decider) this.decide = (state, transcript, fresh, signal) => this.decider!.triage(state, transcript, fresh, signal);
   }
+  decide?: AgentRuntime["decide"];
   step(input: StepInput): Promise<StepResult> {
     if (input.mode === "consolidate" || input.mode === "review") return this.reviewer.step(input);
     return this.scribe.step(input);

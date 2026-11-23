@@ -447,6 +447,19 @@ const updateItem: Handler<UpdateItem> = (state, input, ctx) => {
     (item as unknown as Record<string, unknown>)[f] = next ?? null;
   }
   if (input.topic !== undefined && (input.topic ?? null) !== item.topic) {
+    // Moving an item into a topic that doesn't exist yet creates it (titled from its slug).
+    if (input.topic && !state.topics[input.topic] && /^top-/.test(input.topic)) {
+      const fromSlug = input.topic.replace(/^top-/, "").replace(/-/g, " ");
+      state.topics[input.topic] = {
+        id: input.topic,
+        title: fromSlug.charAt(0).toUpperCase() + fromSlug.slice(1),
+        question: "",
+        createdAt: ev.ts,
+        updatedAt: ev.ts,
+        evidence: [ev],
+      };
+      state.order.topics.push(input.topic);
+    }
     checkTopic(state, input.topic);
     changes.push({ ts: ev.ts, field: "topic", from: item.topic, to: input.topic ?? null, reason: input.reason, source: ctx.source });
     item.topic = input.topic ?? null;
@@ -457,6 +470,11 @@ const updateItem: Handler<UpdateItem> = (state, input, ctx) => {
   }
   checkOneLiveDecision(state, item);
   if (input.related) item.related = [...new Set([...item.related, ...input.related])];
+  // A rationale on its own is a real change (e.g. the reason for a fast-path rejection).
+  const rationaleChanged = input.rationale !== undefined && (input.rationale ?? null) !== item.reason;
+  if (rationaleChanged) {
+    changes.push({ ts: ev.ts, field: "reason", from: item.reason, to: input.rationale ?? null, reason: input.reason, source: ctx.source });
+  }
   if (changes.length === 0 && !input.related) fail(`update_item on '${item.id}' changes nothing`);
 
   // item.reason is the rationale shown in the doc. A status change (accept, reject,

@@ -43,7 +43,7 @@ export const DEFAULT_SCHEDULE: SchedulePolicy = {
   consolidateEverySec: 600,
 };
 
-export type Role = "scribe" | "editor" | "consolidation" | "review";
+export type Role = "scribe" | "editor" | "consolidation" | "review" | "decider";
 
 /** Item changes that can affect the diagram or overview (action items and facts cannot). */
 function affectsArchitecture(e: ChangeEvent, state: DocState): boolean {
@@ -77,6 +77,11 @@ export interface Metrics {
   turnTiming: { firstTokenMs: number | null; firstChangeMs: number | null; totalMs: number; rounds: number; outTokens: number; inUncached: number; inCached: number }[];
   /** Per line: meeting seconds it waited for a busy scribe before its turn started. */
   queueWait: number[];
+  /** Fast-path accept/reject: meeting seconds from the deciding line to the doc showing it. */
+  flipLatency: number[];
+  /** Decision-layer outcomes: turns gated (scribe skipped), flips applied. */
+  gated: number;
+  flips: number;
 }
 
 export interface Snapshot {
@@ -131,7 +136,11 @@ export class MeetingSession extends EventEmitter {
   events: ChangeEvent[] = [];
   usage: Usage = emptyUsage();
   /** The same spend split by what it was for, to see where cost goes. */
-  usageByRole: Record<Role, Usage> = { scribe: emptyUsage(), editor: emptyUsage(), consolidation: emptyUsage(), review: emptyUsage() };
+  usageByRole: Record<Role, Usage> = { scribe: emptyUsage(), editor: emptyUsage(), consolidation: emptyUsage(), review: emptyUsage(), decider: emptyUsage() };
+  /** Lines up to this index were judged by the decision layer to change nothing (the scribe waits for more). */
+  private gatedUpTo = 0;
+  /** Set while draining at the end: the gate is bypassed so every line reaches the scribe. */
+  private forceTurns = false;
   private lastConsolidateSeq = 0;
   log: SessionLogEntry[] = [];
   status: SessionStatus = "idle";
@@ -140,7 +149,7 @@ export class MeetingSession extends EventEmitter {
   editorBusy = false;
   consolidating = false;
   private lastConsolidateAt = 0;
-  metrics: Metrics = { lineLatency: [], diagramLag: [], turnSeconds: [], editorSeconds: [], turnLines: [], turnTiming: [], queueWait: [] };
+  metrics: Metrics = { lineLatency: [], diagramLag: [], turnSeconds: [], editorSeconds: [], turnLines: [], turnTiming: [], queueWait: [], flipLatency: [], gated: 0, flips: 0 };
   reviewOnFinish: boolean;
 
   agent: AgentRuntime;
@@ -338,6 +347,7 @@ export class MeetingSession extends EventEmitter {
 
   /** Processes every pending line (used by finish and headless runs). */
   async drain() {
+    this.forceTurns = true;
     for (;;) {
       if (this.disposed) return;
       await this.whenIdle("agent");
@@ -379,8 +389,18 @@ export class MeetingSession extends EventEmitter {
 
   // ---------- scheduling ----------
 
+  /** True when the pending lines were all judged irrelevant (wait for more before calling the scribe). */
+  /** Whether a line was judged by the decision layer to change nothing (excluded from lag stats). */
+  wasGated(idx: number): boolean {
+    return idx < this.gatedUpTo;
+  }
+
+  isGated(): boolean {
+    return !this.forceTurns && this.pendingCount() > 0 && this.transcript.length <= this.gatedUpTo;
+  }
+
   private schedule() {
-    if (this.disposed || this.manual || this.agentBusy || this.turnTimer || this.pendingCount() === 0) return;
+    if (this.disposed || this.manual || this.agentBusy || this.turnTimer || this.pendingCount() === 0 || this.isGated()) return;
     const wait = this.status === "running" ? this.policy.debounceMs : 0;
     this.turnTimer = setTimeout(() => {
       this.turnTimer = null;
@@ -420,7 +440,7 @@ export class MeetingSession extends EventEmitter {
 
   /** One scribe turn over every pending line. Returns the lines it covered. */
   async runTurn(): Promise<Utterance[]> {
-    if (this.disposed || this.agentBusy || this.pendingCount() === 0) return [];
+    if (this.disposed || this.agentBusy || this.pendingCount() === 0 || this.isGated()) return [];
     return this.runAgent("batch");
   }
 
@@ -439,6 +459,35 @@ export class MeetingSession extends EventEmitter {
     this.changed();
     const started = performance.now();
     try {
+      // Fast decision layer: instant accept/reject flips, and skip the scribe on chatter.
+      if (mode === "batch" && this.agent.decide) {
+        const turnStart = this.meetingTime();
+        const triage = await this.agent.decide(this.state, transcript, fresh, this.abort.signal);
+        this.charge("decider", triage.usage);
+        const apply = this.applier("agent", transcript, meetingTime, (e) => {
+          appliedEvents.push(e);
+          if (affectsArchitecture(e, this.state)) itemsChanged = true;
+        });
+        for (const f of triage.flips) {
+          const r = apply(f.op);
+          if (r.ok) {
+            this.metrics.flips++;
+            this.metrics.flipLatency.push(Math.max(0, turnStart - (fresh.at(-1)?.t ?? turnStart)) + triage.ms / 1000);
+            notices.push(
+              `[fast path] Marked '${f.item.id}' (${f.item.title}) ${f.to} from the latest line. Do not change its status again; add the team's reason with update_item rationale and rewrite its detail as the decided statement if needed.`,
+            );
+            this.addLog("batch", `Fast path: ${f.item.title} → ${f.to} (p=${f.p.toFixed(2)}, ${triage.ms} ms)`);
+          }
+        }
+        if (!this.forceTurns && triage.changes < (this.agent as { decider?: { config: { gateBelow: number } } }).decider!.config.gateBelow && triage.flips.length === 0) {
+          // Nothing to record: keep the lines pending for the scribe's next turn (as context), skip the LLM now.
+          this.gatedUpTo = upTo;
+          this.metrics.gated++;
+          this.notices.unshift(...notices);
+          this.addLog("batch", `${label}: no change detected (p=${triage.changes.toFixed(2)}, ${triage.ms} ms); scribe skipped`);
+          return [];
+        }
+      }
       const result = await this.agent.step({
         state: this.state,
         transcript,
@@ -783,10 +832,17 @@ export async function runHeadless(
     s.setClock(clock);
     for (const u of s.transcript.slice(s.transcript.length - s.pendingCount())) s.metrics.queueWait.push(Math.max(0, clock - u.t));
     const t0 = performance.now();
+    const gatedBefore = s.metrics.gated;
     const lines = await s.runTurn();
     clock += (performance.now() - t0) / 1000;
     s.setClock(clock);
-    for (const u of lines) s.metrics.lineLatency.push(Math.max(0, clock - u.t));
+    for (const u of lines) if (!s.wasGated(u.idx)) s.metrics.lineLatency.push(Math.max(0, clock - u.t));
+    if (lines.length === 0 && s.metrics.gated > gatedBefore) {
+      // Judged as chatter: wait for the next line (the end of the meeting flushes the rest).
+      if (i >= n) break;
+      clock = Math.max(clock, utterances[i]!.t + debounce);
+      continue;
+    }
     // Consolidation runs beside the scribe in live mode, so it does not advance the clock.
     await s.maybeConsolidate();
     // The editor runs on its own timeline, debounced as in live mode: it starts once it is
