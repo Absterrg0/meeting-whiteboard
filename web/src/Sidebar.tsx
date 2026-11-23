@@ -231,7 +231,8 @@ function Transcript({
     if (stick.current) toBottom();
   }, [snap.transcript.length, partials.join("")]);
 
-  const canSay = !snap.readOnly && !(snap.status === "done" && snap.mode !== "live");
+  // Lines can be added after a replay ends too (e.g. "actually, make it seven days"): they are processed straight away.
+  const canSay = !snap.readOnly;
 
   return (
     <div className="transcript">

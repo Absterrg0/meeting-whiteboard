@@ -133,7 +133,20 @@ In the document, hover any item to confirm, edit, reject or replace it; items th
 
 `pnpm eval` replays each as a simulated live meeting: each model call takes as much meeting time as it really took, so batch sizes and lag match a real-time run. It grades deterministic checks (e.g. "the old value must not appear in the current doc", "the removed service is not in the diagram") plus an LLM judge.
 
-RESULTS_TABLE
+Each configuration was run on all 9 meetings (21 to 34 checks each, 231 in total). Lag is the median time from a line being spoken to the doc reflecting it. Cost is the agent spend per meeting (the 2-hour meeting costs about $1).
+
+| Configuration | Checks passed | Same verdict across 2 runs | Lag p50 | Cost per meeting |
+|---|---|---|---|---|
+| v2: flat item list, one agent for items, separate diagram editor (Sonnet 5.5) | 444/462 (96.1%) | 97% | ~2.2 s* | $0.79 |
+| v3: topics, consolidation, all roles on Sonnet 5.5 | 442/462 (95.7%) | 96% | ~3.3 s | $0.98 |
+| **v3 optimized (default)**: Sonnet 5.5 scribe, Haiku 5.5 editor, review at low effort, consolidation only after changes, one-call topic creation and reversals | **222/231 (96.1%)** | (1 run) | **~3.1 s** | **$0.51** |
+| v3 on GPT-6.1 Sol (OpenAI) | 430/462 (93.1%) | 94% | ~5.0 s | $0.59 |
+| Budget option: Haiku 5.5 scribe, Sonnet 5.5 review (`MODEL=anthropic/claude-haiku-5-5 REVIEW_MODEL=anthropic/claude-sonnet-5-5`) | 219/231 (94.8%) | (1 run) | ~2.9 s | $0.15 |
+\* v2's simulation did not count the 0.6 s debounce.
+
+What v3 adds over v2 is not visible in these totals, which were already high. It's in the shape of the doc (one section per question, history per topic), in stability (diagram components matched across runs went from 0.27–1.0 to 0.67–1.0), and in failure modes v2 had. Under v2, a reversal could leave two contradictory "decided" items, and a revised number could survive in a related item; under v3 the reducer and the cross-item check make both structurally impossible or flagged.
+
+The checks that still fail are mostly subtle. An action item someone declined isn't always recorded as declined. In one 120-minute run, a component the team dropped late stayed in the diagram. On the interleaved meeting, a security topic deferred "to another meeting" is sometimes recorded as decided.
 
 ## Design choices and trade-offs
 
