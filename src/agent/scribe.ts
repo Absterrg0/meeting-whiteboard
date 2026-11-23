@@ -235,7 +235,9 @@ export class Scribe {
     const consolidate = input.mode === "consolidate";
     const end = input.transcript.at(-1)?.t ?? 0;
     const lines = consolidate ? input.transcript.filter((u) => u.t >= end - (input.windowSec ?? 480)) : input.transcript;
+    const notices = input.notices?.length ? ["<notices>", ...input.notices, "</notices>", ""] : [];
     const text = [
+      ...notices,
       "<doc_state>",
       describeItems(input.state),
       "</doc_state>",

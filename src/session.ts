@@ -21,7 +21,7 @@ import { join } from "node:path";
 import { performance } from "node:perf_hooks";
 import { MeetingAgent, emptyUsage, mergeUsage, type AgentRuntime, type ApplyFn, type Usage } from "./agent/index.js";
 import type { Op } from "./core/ops.js";
-import { applyOp, replay } from "./core/reducer.js";
+import { applyOp, numbersIn, replay } from "./core/reducer.js";
 import { toMarkdown, toMermaid } from "./core/render.js";
 import { emptyState, formatTs, type ChangeEvent, type DocState, type Source, type Utterance } from "./core/types.js";
 
@@ -413,9 +413,10 @@ export class MeetingSession extends EventEmitter {
     const transcript = this.transcript.slice(0, upTo);
     const meetingTime = transcript.at(-1)?.t ?? 0;
     const label = mode === "batch" ? `${fresh[0]?.ts}–${fresh.at(-1)?.ts}` : "End-of-meeting review";
-    const notices = mode === "batch" ? this.notices.splice(0) : [];
+    const notices = this.notices.splice(0);
     let itemsChanged = false;
     const appliedNow: string[] = [];
+    const appliedEvents: ChangeEvent[] = [];
     this.changed();
     const started = performance.now();
     try {
@@ -428,6 +429,7 @@ export class MeetingSession extends EventEmitter {
         signal: this.abort.signal,
         apply: this.applier("agent", transcript, meetingTime, (e) => {
           appliedNow.push(e.summary);
+          appliedEvents.push(e);
           if (affectsArchitecture(e, this.state)) itemsChanged = true;
           if (mode === "review") this.notices.push(`[review] ${e.summary}`);
         }),
@@ -451,6 +453,7 @@ export class MeetingSession extends EventEmitter {
       for (const e of result.errors) this.addLog("error", e);
       this.failures = 0;
       if (itemsChanged) this.markEditorDirty(fresh[0]?.t ?? meetingTime);
+      this.checkStaleElsewhere(appliedEvents);
       if (mode === "batch" && !this.manual) this.maybeConsolidate();
       return fresh;
     } catch (err) {
@@ -509,6 +512,7 @@ export class MeetingSession extends EventEmitter {
         fresh: [],
         mode: "consolidate",
         windowSec,
+        notices: this.notices.splice(0),
         signal: this.abort.signal,
         apply: this.applier("agent", transcript, meetingTime, (e) => {
           this.notices.push(`[consolidation] ${e.summary}`);
@@ -575,6 +579,36 @@ export class MeetingSession extends EventEmitter {
       // Items changed while it ran: go again (debounced).
       if (this.editorDirty && !this.manual && !this.disposed && !this.editorTimer) {
         this.markEditorDirty(this.editorDirtySince ?? this.meetingTime());
+      }
+    }
+  }
+
+  /**
+   * Cross-item stale values. When a revision replaces a number (limit 100 -> 300), other
+   * live items that still state the old number (a fact "exceeds the 100/min limit") are
+   * found deterministically and pointed out to the scribe on its next turn, to reword.
+   */
+  private checkStaleElsewhere(events: ChangeEvent[]) {
+    for (const e of events) {
+      if (e.op !== "update_item" && e.op !== "supersede_item") continue;
+      const revised = e.targets.map((id) => this.state.items[id]).filter((i): i is NonNullable<typeof i> => !!i);
+      for (const item of revised) {
+        const change = [...item.history].reverse().find((h) => h.field === "detail" && h.ts === e.ts);
+        const before = change?.from ?? (e.op === "supersede_item" ? this.state.items[e.targets[0]!]?.detail : undefined);
+        if (!before || item.status === "superseded") continue;
+        const now = numbersIn(item.detail);
+        const retired = [...numbersIn(before)].filter((n) => !now.has(n));
+        if (!retired.length) continue;
+        for (const other of Object.values(this.state.items)) {
+          if (other.id === item.id || !["accepted", "tentative", "open", "proposed"].includes(other.status)) continue;
+          const text = `${other.title} ${other.detail} ${other.reason ?? ""}`;
+          const hit = retired.filter((n) => numbersIn(text).has(n));
+          if (hit.length) {
+            this.notices.push(
+              `[stale value check] '${other.id}' still mentions ${hit.join(", ")}, which '${item.id}' no longer says ("${item.detail}"). If it refers to the old value, reword it (update_item).`,
+            );
+          }
+        }
       }
     }
   }
