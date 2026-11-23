@@ -170,12 +170,44 @@ export function reconcile(state: DocState, plan: Plan): Op[] {
   const exists = (id: string) => !!state.items[id];
   const sameSet = (a: string[], b: string[]) => a.length === b.length && a.every((x) => b.includes(x));
 
+  // Stability rules, in code rather than left to the model:
+  //  1. Same thing, same id: a planned component with a new id that matches a current one the
+  //     plan dropped (same name) keeps the current id, so its edges and its place
+  //     in the layout don't churn.
+  //  2. No silent drops: a current component whose basis still has a live decision or
+  //     requirement stays unless another planned component takes over that basis (a merge or a
+  //     replacement). Components leave the diagram because a decision changed, not because one
+  //     editor run forgot them.
+  const live = (id: string) => {
+    const i = state.items[id];
+    return !!i && (i.kind === "decision" || i.kind === "requirement") && (i.status === "accepted" || i.status === "tentative");
+  };
+  const current = state.order.components.map((id) => state.components[id]!).filter((c) => !c.removed);
+  const norm = (n: string) => n.toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
+  const planned = plan.components.map((c) => ({ ...c, id: slug(c.id), basis: [...new Set(c.basis.filter(exists))], name: c.name.replace(/\s*\(TBD\)\s*/gi, " ").trim().slice(0, 60) })).filter((c) => c.basis.length && c.name);
+  const plannedIds = new Set(planned.map((c) => c.id));
+  const rename = new Map<string, string>();
+  const claimed = new Set<string>();
+  for (const c of planned) {
+    if (state.components[c.id] && !state.components[c.id]!.removed) continue;
+    const match = current.find((o) => !plannedIds.has(o.id) && !claimed.has(o.id) && norm(o.name) === norm(c.name));
+    if (match) {
+      rename.set(c.id, match.id);
+      claimed.add(match.id);
+    }
+  }
   const wanted = new Map<string, Plan["components"][number]>();
-  for (const c of plan.components) {
-    const id = slug(c.id);
-    const basis = [...new Set(c.basis.filter(exists))];
-    if (!basis.length || !c.name.trim()) continue;
-    wanted.set(id, { ...c, id, basis, name: c.name.trim().slice(0, 60) });
+  for (const c of planned) {
+    const id = rename.get(c.id) ?? c.id;
+    if (!wanted.has(id)) wanted.set(id, { ...c, id });
+  }
+  const coveredBasis = new Set([...wanted.values()].flatMap((c) => c.basis));
+  for (const o of current) {
+    if (wanted.has(o.id)) continue;
+    const liveBasis = o.basis.filter(live);
+    if (liveBasis.length && !liveBasis.some((b) => coveredBasis.has(b))) {
+      wanted.set(o.id, { id: o.id, name: o.name, type: o.type, description: o.description, basis: o.basis } as Plan["components"][number]);
+    }
   }
   for (const c of wanted.values()) {
     const cur = state.components[c.id];
@@ -199,8 +231,8 @@ export function reconcile(state: DocState, plan: Plan): Op[] {
 
   const wantedEdges = new Map<string, Plan["edges"][number]>();
   for (const e of plan.edges) {
-    const from = slug(e.from);
-    const to = slug(e.to);
+    const from = rename.get(slug(e.from)) ?? slug(e.from);
+    const to = rename.get(slug(e.to)) ?? slug(e.to);
     const basis = [...new Set(e.basis.filter(exists))];
     if (from === to || !wanted.has(from) || !wanted.has(to) || !basis.length) continue;
     wantedEdges.set(`${from}->${to}`, { ...e, from, to, basis, label: e.label.trim().slice(0, 40) });

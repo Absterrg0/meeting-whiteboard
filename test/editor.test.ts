@@ -69,6 +69,41 @@ describe("editor reconcile", () => {
   });
 });
 
+describe("diagram stability", () => {
+  it("keeps the id of a component the editor re-ids under the same name, and its edges follow", () => {
+    const h = base();
+    const ops = reconcile(
+      h.state,
+      plan({
+        components: [
+          { id: "cmp-api", name: "API", type: "service", description: "Serves requests.", basis: ["dec-postgres"] },
+          { id: "cmp-cache-2", name: "cache", type: "datastore", description: "Old cache.", basis: ["dec-postgres"] },
+        ],
+        edges: [{ from: "cmp-api", to: "cmp-cache-2", label: "read", basis: ["dec-postgres"] }],
+      }),
+    );
+    expect(ops.filter((o) => o.name !== "set_overview")).toEqual([
+      { name: "upsert_component", input: { id: "cmp-cache", name: "cache", type: "datastore", description: "Old cache.", basis: ["dec-postgres"] } },
+    ]);
+  });
+
+  it("does not drop a component whose decision is still live just because one plan forgot it", () => {
+    const h = base().apply("record_item", decision("dec-queue", "accepted", "00:08:20", "I'll write the migration plan by Friday", { title: "Migration worker" }));
+    h.apply("upsert_component", { id: "cmp-queue", name: "SQS queue", type: "queue", description: "Jobs.", basis: ["dec-queue"] });
+    const forgot = plan({
+      components: [
+        { id: "cmp-api", name: "API", type: "service", description: "Serves requests.", basis: ["dec-postgres"] },
+        { id: "cmp-cache", name: "Cache", type: "datastore", description: "Old cache.", basis: ["dec-postgres"] },
+      ],
+      edges: [{ from: "cmp-api", to: "cmp-cache", label: "read", basis: ["dec-postgres"] }],
+    });
+    expect(reconcile(h.state, forgot).map((o) => o.name)).not.toContain("remove_component");
+    // Once the decision is replaced, the component may go.
+    h.apply("update_item", { id: "dec-queue", status: "rejected", reason: "turned down", ts: "00:08:20", quote: "I'll write the migration plan by Friday" });
+    expect(reconcile(h.state, forgot).map((o) => `${o.name}:${"id" in o.input ? o.input.id : ""}`)).toContain("remove_component:cmp-queue");
+  });
+});
+
 describe("overview screening", () => {
   it("finds terms that only belong to rejected or superseded options", () => {
     expect(staleTerms(base().state)).toContain("redis");
