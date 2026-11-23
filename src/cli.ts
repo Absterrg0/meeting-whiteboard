@@ -1,48 +1,54 @@
 /**
- * Headless replay: `pnpm replay transcripts/foo.jsonl [--model claude-opus-5-5] [--effort low]`
- * Prints each batch's changes and writes out/<id>/design-doc.md, state.json, events.jsonl.
+ * Headless replay: `pnpm replay transcripts/foo.jsonl [--model anthropic/claude-opus-5-5] [--effort low]
+ *   [--editor-model openai/gpt-6-luna] [--editor-effort medium]`
+ * Simulates the meeting in (meeting) real time, prints each change, and writes
+ * out/<id>/design-doc.md, state.json, events.jsonl.
  */
 import "dotenv/config";
 import { readFileSync } from "node:fs";
 import { basename } from "node:path";
-import { DEFAULT_CONFIG, ScribeAgent } from "./agent/agent.js";
+import { configFromEnv, MeetingAgent } from "./agent/index.js";
 import { parseTranscript } from "./ingest/transcript.js";
-import { runHeadless } from "./session.js";
+import { percentile, runHeadless } from "./session.js";
 
 function arg(name: string): string | undefined {
   const i = process.argv.indexOf(`--${name}`);
   return i >= 0 ? process.argv[i + 1] : undefined;
 }
+const effort = (v: string | undefined) => (v === "low" || v === "medium" || v === "high" ? v : undefined);
 
 const file = process.argv[2];
 if (!file || file.startsWith("--")) {
-  console.error("usage: pnpm replay <transcript.jsonl|.txt|.md> [--model id] [--effort low|medium|high]");
+  console.error("usage: pnpm replay <transcript> [--model provider/id] [--effort low|medium|high] [--editor-model provider/id] [--editor-effort ...]");
   process.exit(1);
 }
 const utterances = parseTranscript(readFileSync(file, "utf8"));
-const agent = new ScribeAgent({
-  ...DEFAULT_CONFIG,
-  model: arg("model") ?? DEFAULT_CONFIG.model,
-  effort: (arg("effort") as typeof DEFAULT_CONFIG.effort) ?? DEFAULT_CONFIG.effort,
+const config = configFromEnv({
+  ...(arg("model") ? { model: arg("model")! } : {}),
+  ...(arg("editor-model") ? { editorModel: arg("editor-model")! } : {}),
+  ...(effort(arg("effort")) ? { effort: effort(arg("effort"))! } : {}),
+  ...(effort(arg("editor-effort")) ? { editorEffort: effort(arg("editor-effort"))! } : {}),
 });
 const id = `${basename(file).replace(/\.[^.]+$/, "")}-${Date.now()}`;
-console.log(`Replaying ${utterances.length} utterances from ${file} with ${agent.config.model} (${agent.config.effort})`);
+console.log(
+  `Replaying ${utterances.length} utterances from ${file}: scribe ${config.model} (${config.effort}), editor ${config.editorModel} (${config.editorEffort})`,
+);
 
-let shown = 0;
+let shownLog = 0;
 let shownEvents = 0;
-const s = await runHeadless(utterances, {
-  id,
-  agent,
-  outDir: "out",
-  onBatch: (sess) => {
-    for (const l of sess.log.slice(shown)) console.log(`${l.kind === "error" ? "  ! " : ""}${l.message}`);
-    for (const e of sess.events.slice(shownEvents)) console.log(`    [${e.ts}] ${e.op}: ${e.summary}`);
-    shown = sess.log.length;
-    shownEvents = sess.events.length;
-  },
-});
-
-for (const l of s.log.slice(shown)) console.log(`${l.kind === "error" ? "  ! " : ""}${l.message}`);
-for (const e of s.events.slice(shownEvents)) console.log(`    [${e.ts}] ${e.op}: ${e.summary}`);
-console.log(`\nDone. ${s.events.length} changes, ${s.usage.calls} model calls, $${s.usage.costUsd.toFixed(3)}`);
+const print = (sess: { log: { kind: string; message: string }[]; events: { ts: string; source: string; op: string; summary: string }[] }) => {
+  for (const l of sess.log.slice(shownLog)) console.log(`${l.kind === "error" ? "  ! " : l.kind === "editor" ? "  ~ " : ""}${l.message}`);
+  for (const e of sess.events.slice(shownEvents)) console.log(`    [${e.ts}] ${e.source === "editor" ? "(editor) " : ""}${e.op}: ${e.summary}`);
+  shownLog = sess.log.length;
+  shownEvents = sess.events.length;
+};
+const s = await runHeadless(utterances, { id, agent: new MeetingAgent(config), outDir: "out", onBatch: print });
+print(s);
+const m = s.metrics;
+console.log(
+  `\nDone. ${s.events.length} changes, ${s.usage.calls} model calls, $${s.usage.costUsd.toFixed(3)}${s.usage.unpriced ? " (+ unpriced model)" : ""}`,
+);
+console.log(
+  `Latency (said -> in doc): p50 ${percentile(m.lineLatency, 50)?.toFixed(1)}s, p90 ${percentile(m.lineLatency, 90)?.toFixed(1)}s; diagram lag p50 ${percentile(m.diagramLag, 50)?.toFixed(1)}s; ${m.turnLines.length} scribe turns, ${m.editorSeconds.length} editor runs`,
+);
 console.log(`Output: out/${id}/design-doc.md`);

@@ -26,17 +26,17 @@ export class Harness {
   events: ChangeEvent[] = [];
   constructor(public transcript: Utterance[] = TRANSCRIPT) {}
 
-  ctx(source: "agent" | "human" = "agent", meetingTime = 600): ApplyContext {
+  ctx(source: "agent" | "human" | "editor" = "agent", meetingTime = 600): ApplyContext {
     // A human edit happens at `meetingTime`, so it only "knows" the transcript said by then.
     const transcript = source === "human" ? this.transcript.filter((u) => u.t <= meetingTime) : this.transcript;
     return { source, transcript, meetingTime, seq: this.events.length + 1, now: () => "2026-01-01T00:00:00Z" };
   }
 
-  try<N extends OpName>(name: N, input: OpInput<N>, source: "agent" | "human" = "agent", meetingTime = 600) {
+  try<N extends OpName>(name: N, input: OpInput<N>, source: "agent" | "human" | "editor" = "agent", meetingTime = 600) {
     return applyOp(this.state, { name, input } as Op, this.ctx(source, meetingTime));
   }
 
-  apply<N extends OpName>(name: N, input: OpInput<N>, source: "agent" | "human" = "agent", meetingTime = 600): this {
+  apply<N extends OpName>(name: N, input: OpInput<N>, source: "agent" | "human" | "editor" = "agent", meetingTime = 600): this {
     const r = this.try(name, input, source, meetingTime);
     if (!r.ok) throw new Error(`${name} failed: ${r.error}`);
     this.state = r.state;

@@ -8,20 +8,19 @@
  * Prints a table per transcript and writes out/eval-<timestamp>.json. Exit code 1 if any check fails.
  */
 import "dotenv/config";
-import Anthropic from "@anthropic-ai/sdk";
-import { zodOutputFormat } from "@anthropic-ai/sdk/helpers/zod";
+import { generateText, Output } from "ai";
 import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { basename, join } from "node:path";
 import { z } from "zod";
-import { DEFAULT_CONFIG, ScribeAgent } from "./agent/agent.js";
+import { configFromEnv, MeetingAgent, type AgentConfig } from "./agent/index.js";
+import { addUsage, emptyUsage, languageModel, parseModel, providerOptions } from "./agent/llm.js";
 import { componentVisibility, edgeVisibility, toMarkdown, toMermaid } from "./core/render.js";
 import type { DocState, Utterance } from "./core/types.js";
 import { parseTranscript } from "./ingest/transcript.js";
-import { runHeadless } from "./session.js";
+import { percentile, runHeadless } from "./session.js";
 
-const JUDGE_MODEL = "claude-sonnet-5-5";
-/** $ per million tokens: input, output, cache read, cache write. */
-const JUDGE_PRICE = [2, 10, 0.1, 2.5] as const;
+/** The judge grades "llm" checks. Any provider works; default Sonnet 5.5. */
+const JUDGE_MODEL = parseModel(process.env.JUDGE_MODEL ?? "anthropic/claude-sonnet-5-5");
 
 const Check = z.discriminatedUnion("type", [
   z.object({ type: z.literal("llm"), id: z.string(), desc: z.string(), expect: z.string() }),
@@ -155,7 +154,6 @@ A component "shownAs" active/tbd is in the current architecture; proposed/retire
 Equivalent wording, merged items or different ids are fine as long as the substance matches. Return exactly one result per check id: first a one-line reason citing item ids or doc text, then the verdict that follows from it. Minor wording or extra detail is not a failure; fail only when the expectation's substance is not met.`;
 
 async function judge(
-  client: Anthropic,
   checks: Extract<Check, { type: "llm" }>[],
   transcript: Utterance[],
   state: DocState,
@@ -180,28 +178,23 @@ async function judge(
     "</checks>",
   ].join("\n");
 
-  const res = await client.messages.parse({
-    model: JUDGE_MODEL,
-    max_tokens: 8000,
-    system: JUDGE_SYSTEM,
-    messages: [{ role: "user", content: user }],
-    output_config: { effort: "low", format: zodOutputFormat(JudgeOutput) },
+  const res = await generateText({
+    model: languageModel(JUDGE_MODEL),
+    instructions: JUDGE_SYSTEM,
+    prompt: user,
+    output: Output.object({ schema: JudgeOutput }),
+    providerOptions: providerOptions(JUDGE_MODEL, "low"),
+    maxOutputTokens: 16000,
   });
-  const u = res.usage;
-  const costUsd =
-    ((u.input_tokens ?? 0) * JUDGE_PRICE[0] +
-      (u.output_tokens ?? 0) * JUDGE_PRICE[1] +
-      (u.cache_read_input_tokens ?? 0) * JUDGE_PRICE[2] +
-      (u.cache_creation_input_tokens ?? 0) * JUDGE_PRICE[3]) /
-    1e6;
-  const parsed = res.parsed_output;
-  const byId = new Map((parsed?.results ?? []).map((r) => [r.id, r]));
+  const usage = emptyUsage();
+  addUsage(usage, res.usage, JUDGE_MODEL);
+  const byId = new Map(res.output.results.map((r) => [r.id, r]));
   const results = checks.map((c): CheckResult => {
     const r = byId.get(c.id);
     if (!r) return { id: c.id, type: "llm", desc: c.desc, pass: false, reason: "judge returned no verdict" };
     return { id: c.id, type: "llm", desc: c.desc, pass: r.pass, reason: r.reason };
   });
-  return { results, costUsd };
+  return { results, costUsd: usage.costUsd };
 }
 
 // ---------- runner ----------
@@ -238,6 +231,7 @@ function pad(s: string, n: number): string {
 
 interface TranscriptReport {
   name: string;
+  run: number;
   transcript: string;
   sessionId: string;
   results: CheckResult[];
@@ -248,17 +242,24 @@ interface TranscriptReport {
   judgeCostUsd: number;
   agentErrors: string[];
   durationSec: number;
+  /** Seconds of meeting time from a line being said to the doc reflecting it. */
+  latencyP50: number | null;
+  latencyP90: number | null;
+  diagramLagP50: number | null;
+  /** Visible diagram components (by name) and edges, for cross-run stability. */
+  diagramNodes: string[];
+  diagramEdges: string[];
   error?: string;
 }
 
-async function evalOne(name: string, agent: ScribeAgent, client: Anthropic, stamp: string): Promise<TranscriptReport> {
+async function evalOne(name: string, config: AgentConfig, stamp: string, run: number): Promise<TranscriptReport> {
   const started = Date.now();
   const expected = ExpectedFile.parse(JSON.parse(readFileSync(join("expected", `${name}.json`), "utf8")));
   const file = findTranscript(name);
   if (!file) throw new Error(`no transcript for '${name}' in transcripts/`);
   const utterances = parseTranscript(readFileSync(file, "utf8"));
-  const sessionId = `eval-${name}-${stamp}`;
-  const s = await runHeadless(utterances, { id: sessionId, agent, outDir: "out" });
+  const sessionId = `eval-${name}-${stamp}-r${run}`;
+  const s = await runHeadless(utterances, { id: sessionId, agent: new MeetingAgent(config), outDir: "out" });
 
   const markdown = toMarkdown(s.state, { events: s.events });
   const mermaid = toMermaid(s.state);
@@ -270,7 +271,7 @@ async function evalOne(name: string, agent: ScribeAgent, client: Anthropic, stam
   }
   let judgeCostUsd = 0;
   try {
-    const j = await judge(client, llmChecks, utterances, s.state, markdown);
+    const j = await judge(llmChecks, utterances, s.state, markdown);
     results.unshift(...j.results);
     judgeCostUsd = j.costUsd;
   } catch (e) {
@@ -278,9 +279,18 @@ async function evalOne(name: string, agent: ScribeAgent, client: Anthropic, stam
     results.unshift(...llmChecks.map((c) => ({ id: c.id, type: c.type, desc: c.desc, pass: false, reason: msg })));
   }
   const agentErrors = s.log.filter((l) => l.kind === "error").map((l) => `${l.ts} ${l.message}`);
+  const visible = s.state.order.components
+    .map((id) => s.state.components[id]!)
+    .filter((c) => ["active", "tbd"].includes(componentVisibility(s.state, c)));
+  const nameOf = (id: string) => normName(s.state.components[id]?.name ?? id);
+  const diagramEdges = s.state.order.edges
+    .map((id) => s.state.edges[id]!)
+    .filter((e) => ["active", "tbd"].includes(edgeVisibility(s.state, e)))
+    .map((e) => `${nameOf(e.from)}->${nameOf(e.to)}`);
   s.dispose();
   return {
     name,
+    run,
     transcript: file,
     sessionId,
     results,
@@ -291,8 +301,54 @@ async function evalOne(name: string, agent: ScribeAgent, client: Anthropic, stam
     judgeCostUsd,
     agentErrors,
     durationSec: (Date.now() - started) / 1000,
+    latencyP50: percentile(s.metrics.lineLatency, 50),
+    latencyP90: percentile(s.metrics.lineLatency, 90),
+    diagramLagP50: percentile(s.metrics.diagramLag, 50),
+    diagramNodes: visible.map((c) => normName(c.name)),
+    diagramEdges,
   };
 }
+
+/** Component names normalised for cross-run comparison ("Event queue (SQS)" ~ "event queue sqs"). */
+function normName(s: string): string {
+  return s.toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
+}
+
+function jaccard(a: string[], b: string[]): number {
+  const A = new Set(a);
+  const B = new Set(b);
+  const inter = [...A].filter((x) => B.has(x)).length;
+  const union = new Set([...A, ...B]).size;
+  return union === 0 ? 1 : inter / union;
+}
+
+function meanPairwise(sets: string[][]): number | null {
+  if (sets.length < 2) return null;
+  let sum = 0;
+  let n = 0;
+  for (let i = 0; i < sets.length; i++) for (let j = i + 1; j < sets.length; j++) {
+    sum += jaccard(sets[i]!, sets[j]!);
+    n++;
+  }
+  return sum / n;
+}
+
+/** Runs tasks with bounded concurrency (API rate limits; long meetings). */
+async function pool<T>(tasks: (() => Promise<T>)[], limit: number): Promise<T[]> {
+  const out: T[] = new Array(tasks.length);
+  let next = 0;
+  await Promise.all(
+    Array.from({ length: Math.min(limit, tasks.length) }, async () => {
+      while (next < tasks.length) {
+        const i = next++;
+        out[i] = await tasks[i]!();
+      }
+    }),
+  );
+  return out;
+}
+
+const fmt = (x: number | null, d = 1) => (x === null ? "n/a" : x.toFixed(d));
 
 async function main() {
   const names = positionalArgs().map((n) => basename(n).replace(/\.[^.]+$/, ""));
@@ -307,22 +363,26 @@ async function main() {
       process.exit(2);
     }
   }
-
-  const config = {
-    ...DEFAULT_CONFIG,
-    model: arg("model") ?? DEFAULT_CONFIG.model,
-    effort: (arg("effort") as typeof DEFAULT_CONFIG.effort) ?? DEFAULT_CONFIG.effort,
-  };
-  const client = new Anthropic();
+  const effortArg = (v: string | undefined) => (v === "low" || v === "medium" || v === "high" ? v : undefined);
+  const config = configFromEnv({
+    ...(arg("model") ? { model: arg("model")! } : {}),
+    ...(arg("editor-model") ? { editorModel: arg("editor-model")! } : {}),
+    ...(effortArg(arg("effort")) ? { effort: effortArg(arg("effort"))! } : {}),
+    ...(effortArg(arg("editor-effort")) ? { editorEffort: effortArg(arg("editor-effort"))! } : {}),
+  });
+  const runs = Math.max(1, Number(arg("runs") ?? 1));
+  const concurrency = Math.max(1, Number(arg("concurrency") ?? 4));
   const stamp = new Date().toISOString().replace(/[:.]/g, "-");
-  console.log(`Evaluating ${selected.join(", ")} with ${config.model} (${config.effort}); judge ${JUDGE_MODEL}\n`);
+  console.log(
+    `Evaluating ${selected.join(", ")} x${runs} with scribe ${config.model} (${config.effort}), editor ${config.editorModel} (${config.editorEffort}); judge ${JUDGE_MODEL.spec}\n`,
+  );
 
-  // Transcripts are independent; run them concurrently, each with its own agent instance.
-  const reports = await Promise.all(
-    selected.map((n) =>
-      evalOne(n, new ScribeAgent(config, client), client, stamp).catch(
+  const tasks = selected.flatMap((n) =>
+    Array.from({ length: runs }, (_, r) => () =>
+      evalOne(n, config, stamp, r + 1).catch(
         (e): TranscriptReport => ({
           name: n,
+          run: r + 1,
           transcript: "",
           sessionId: "",
           results: [],
@@ -333,32 +393,67 @@ async function main() {
           judgeCostUsd: 0,
           agentErrors: [],
           durationSec: 0,
+          latencyP50: null,
+          latencyP90: null,
+          diagramLagP50: null,
+          diagramNodes: [],
+          diagramEdges: [],
           error: (e as Error).stack ?? String(e),
         }),
       ),
     ),
   );
+  const reports = await pool(tasks, concurrency);
 
   let passed = 0;
   let total = 0;
   let agentCost = 0;
   let judgeCost = 0;
-  for (const r of reports) {
-    console.log(`=== ${r.name} — ${r.passed}/${r.total} passed (agent $${r.agentCostUsd.toFixed(3)} over ${r.agentCalls} calls, judge $${r.judgeCostUsd.toFixed(3)}, ${r.durationSec.toFixed(0)}s)`);
-    if (r.error) console.log(`  ERROR: ${r.error}`);
-    if (r.sessionId) console.log(`  output: out/${r.sessionId}/design-doc.md`);
-    for (const c of r.results) {
-      console.log(`  ${c.pass ? "PASS" : "FAIL"}  ${pad(c.id, 28)} ${pad(c.desc, 50)} ${c.reason}`);
+  const summary: Record<string, unknown>[] = [];
+  for (const name of selected) {
+    const rs = reports.filter((r) => r.name === name);
+    for (const r of rs) {
+      console.log(
+        `=== ${r.name} run ${r.run} — ${r.passed}/${r.total} passed (agent $${r.agentCostUsd.toFixed(3)} over ${r.agentCalls} calls, judge $${r.judgeCostUsd.toFixed(3)}, ${r.durationSec.toFixed(0)}s; latency p50 ${fmt(r.latencyP50)}s p90 ${fmt(r.latencyP90)}s, diagram lag p50 ${fmt(r.diagramLagP50)}s)`,
+      );
+      if (r.error) console.log(`  ERROR: ${r.error}`);
+      if (r.sessionId) console.log(`  output: out/${r.sessionId}/design-doc.md`);
+      for (const c of r.results) if (!c.pass || runs === 1) console.log(`  ${c.pass ? "PASS" : "FAIL"}  ${pad(c.id, 28)} ${pad(c.desc, 50)} ${c.reason}`);
+      if (r.agentErrors.length) {
+        console.log(`  agent tool errors (${r.agentErrors.length}, self-corrected or dropped):`);
+        for (const e of r.agentErrors.slice(0, 10)) console.log(`    ${e}`);
+      }
+      passed += r.passed;
+      total += r.total;
+      agentCost += r.agentCostUsd;
+      judgeCost += r.judgeCostUsd;
     }
-    if (r.agentErrors.length) {
-      console.log(`  agent tool errors (${r.agentErrors.length}, self-corrected or dropped):`);
-      for (const e of r.agentErrors.slice(0, 20)) console.log(`    ${e}`);
+    if (runs > 1) {
+      // Stability: does each check get the same verdict in every run?
+      const ids = [...new Set(rs.flatMap((r) => r.results.map((c) => c.id)))];
+      const stable = ids.filter((id) => new Set(rs.map((r) => r.results.find((c) => c.id === id)?.pass)).size === 1).length;
+      const flaky = ids.filter((id) => new Set(rs.map((r) => r.results.find((c) => c.id === id)?.pass)).size > 1);
+      const nodeJ = meanPairwise(rs.map((r) => r.diagramNodes));
+      const edgeJ = meanPairwise(rs.map((r) => r.diagramEdges));
+      const line = {
+        name,
+        runs: rs.length,
+        passRate: rs.reduce((a, r) => a + r.passed, 0) / Math.max(1, rs.reduce((a, r) => a + r.total, 0)),
+        checkStability: ids.length ? stable / ids.length : null,
+        flakyChecks: flaky,
+        diagramNodeJaccard: nodeJ,
+        diagramEdgeJaccard: edgeJ,
+        latencyP50: percentile(rs.map((r) => r.latencyP50 ?? 0), 50),
+        latencyP90: percentile(rs.map((r) => r.latencyP90 ?? 0), 50),
+        costPerRun: rs.reduce((a, r) => a + r.agentCostUsd, 0) / rs.length,
+      };
+      summary.push(line);
+      console.log(
+        `--- ${name}: pass ${(line.passRate * 100).toFixed(0)}%, check stability ${fmt(line.checkStability === null ? null : line.checkStability * 100, 0)}%, diagram overlap nodes ${fmt(nodeJ, 2)} edges ${fmt(edgeJ, 2)}, latency p50 ${fmt(line.latencyP50)}s, $${line.costPerRun.toFixed(3)}/run`,
+      );
+      if (flaky.length) console.log(`    flaky: ${flaky.join(", ")}`);
     }
     console.log("");
-    passed += r.passed;
-    total += r.total;
-    agentCost += r.agentCostUsd;
-    judgeCost += r.judgeCostUsd;
   }
   console.log(`TOTAL ${passed}/${total} passed. Agent $${agentCost.toFixed(3)}, judge $${judgeCost.toFixed(3)}, total $${(agentCost + judgeCost).toFixed(3)}`);
 
@@ -366,11 +461,7 @@ async function main() {
   const outFile = join("out", `eval-${stamp}.json`);
   writeFileSync(
     outFile,
-    JSON.stringify(
-      { model: config.model, effort: config.effort, judge: JUDGE_MODEL, passed, total, agentCost, judgeCost, reports },
-      null,
-      2,
-    ),
+    JSON.stringify({ config, judge: JUDGE_MODEL.spec, runs, passed, total, agentCost, judgeCost, summary, reports }, null, 2),
   );
   console.log(`Wrote ${outFile}`);
   process.exit(passed === total ? 0 : 1);
@@ -378,5 +469,8 @@ async function main() {
 
 // Only run when executed directly (tests import the grading helpers).
 if (process.argv[1] && /eval\.[cm]?[jt]s$/.test(process.argv[1])) {
-  await main();
+  main().catch((e) => {
+    console.error(e);
+    process.exit(1);
+  });
 }

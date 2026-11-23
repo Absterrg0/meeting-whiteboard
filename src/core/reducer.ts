@@ -12,6 +12,7 @@ import {
   type RemoveComponent,
   type RemoveEdge,
   type SetMeetingInfo,
+  type SetOverview,
   type SupersedeItem,
   type UpdateItem,
   type UpsertComponent,
@@ -24,13 +25,14 @@ import {
   type Evidence,
   type HistoryEntry,
   type Item,
+  type Source,
   type Utterance,
   formatTs,
   parseTs,
 } from "./types.js";
 
 export interface ApplyContext {
-  source: "agent" | "human";
+  source: Source;
   /** Transcript so far; used for grounding agent operations. */
   transcript: Utterance[];
   /** Current meeting time in seconds (used for human edits, which have no quote). */
@@ -92,6 +94,9 @@ type Handler<T> = (state: DocState, input: T, ctx: ApplyContext) => HandlerResul
 function evidenceFor(ctx: ApplyContext, ts: string | undefined, quote: string | undefined): Evidence {
   if (ctx.source === "human") {
     return { ts: formatTs(ctx.meetingTime), speaker: "(edited in UI)", quote: quote ?? "" };
+  }
+  if (ctx.source === "editor") {
+    return { ts: formatTs(ctx.meetingTime), speaker: "(editor)", quote: quote ?? "" };
   }
   if (!ts || !quote) fail("ts and quote are required");
   const g = ground(ts, quote, ctx.transcript);
@@ -386,11 +391,18 @@ const removeEdge: Handler<RemoveEdge> = (state, input, ctx) => {
 
 const setMeetingInfo: Handler<SetMeetingInfo> = (state, input, ctx) => {
   const ev = evidenceFor(ctx, input.ts, input.quote);
-  state.meeting = { title: input.title, context: input.context };
+  state.meeting = { ...state.meeting, title: input.title, context: input.context };
   return { ts: ev.ts, targets: [], summary: `Set doc title to "${input.title}".` };
 };
 
+const setOverview: Handler<SetOverview> = (state, input, ctx) => {
+  if (ctx.source === "agent") fail("the overview is maintained by the editor");
+  state.meeting.overview = input.overview.trim();
+  return { ts: formatTs(ctx.meetingTime), targets: [], summary: "Updated the overview." };
+};
+
 const HANDLERS: { [N in OpName]: Handler<never> } = {
+  set_overview: setOverview as Handler<never>,
   set_meeting_info: setMeetingInfo as Handler<never>,
   record_item: recordItem as Handler<never>,
   update_item: updateItem as Handler<never>,

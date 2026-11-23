@@ -118,7 +118,9 @@ export type UpsertComponent = z.infer<typeof UpsertComponent>;
 export const RemoveComponent = z.object({
   id,
   reason: z.string().min(3),
-  ...grounding,
+  // Required for the scribe; the editor removes components because their basis changed.
+  ts: grounding.ts.optional(),
+  quote: grounding.quote.optional(),
 });
 export type RemoveComponent = z.infer<typeof RemoveComponent>;
 
@@ -144,6 +146,11 @@ export const SetMeetingInfo = z.object({
 });
 export type SetMeetingInfo = z.infer<typeof SetMeetingInfo>;
 
+export const SetOverview = z.object({
+  overview: z.string().max(2000),
+});
+export type SetOverview = z.infer<typeof SetOverview>;
+
 export const OPS = {
   set_meeting_info: SetMeetingInfo,
   record_item: RecordItem,
@@ -153,6 +160,7 @@ export const OPS = {
   remove_component: RemoveComponent,
   upsert_edge: UpsertEdge,
   remove_edge: RemoveEdge,
+  set_overview: SetOverview,
 } as const;
 export type OpName = keyof typeof OPS;
 export type OpInput<N extends OpName> = z.infer<(typeof OPS)[N]>;

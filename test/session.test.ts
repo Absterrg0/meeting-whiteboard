@@ -1,28 +1,41 @@
 import { describe, expect, it } from "vitest";
-import type { ScribeAgent, StepInput, StepResult } from "../src/agent/agent.js";
-import { emptyUsage } from "../src/agent/agent.js";
+import type { AgentRuntime, EditInput, StepInput, StepResult } from "../src/agent/index.js";
+import { emptyUsage } from "../src/agent/index.js";
 import type { Utterance } from "../src/core/types.js";
 import { runHeadless } from "../src/session.js";
 import { utt } from "./helpers.js";
 
-/** Records every step() call and returns the state unchanged. */
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+/** Records every step() call; optionally takes `delayMs` of wall time per turn and has an editor. */
 class FakeAgent {
-  config = { model: "fake", effort: "low" as const, maxRounds: 1, contextLines: 0 };
+  config = { model: "fake" };
   /** Batch calls (mode "batch"). */
   calls: { fresh: number[]; transcriptLen: number }[] = [];
   /** End-of-meeting review calls: transcript length seen. */
   reviews: number[] = [];
-  constructor(private onStep?: (input: StepInput) => Partial<StepResult>) {}
+  edits = 0;
+  edit?: (input: EditInput) => Promise<StepResult>;
+  constructor(
+    private onStep?: (input: StepInput) => Partial<StepResult>,
+    private delayMs = 0,
+    withEditor = false,
+  ) {
+    if (withEditor) {
+      this.edit = async () => {
+        this.edits++;
+        return { applied: 0, errors: [], note: "edit", usage: emptyUsage() };
+      };
+    }
+  }
   async step(input: StepInput): Promise<StepResult> {
     if (input.mode === "review") {
       this.reviews.push(input.transcript.length);
       return { applied: 0, errors: [], note: "review", usage: emptyUsage() };
     }
-    this.calls.push({
-      fresh: input.fresh.map((u) => u.idx),
-      transcriptLen: input.transcript.length,
-    });
-    await Promise.resolve();
+    this.calls.push({ fresh: input.fresh.map((u) => u.idx), transcriptLen: input.transcript.length });
+    if (this.delayMs) await sleep(this.delayMs);
+    else await Promise.resolve();
     return { applied: 0, errors: [], note: "fake", usage: { ...emptyUsage(), calls: 1, costUsd: 0.01 }, ...this.onStep?.(input) };
   }
 }
@@ -31,46 +44,46 @@ function meeting(n: number, gap = 10, text = (i: number) => `point number ${i}`)
   return Array.from({ length: n }, (_, i) => utt(i * gap, i % 2 ? "Ben" : "Ana", text(i), i));
 }
 
-function asAgent(f: FakeAgent): ScribeAgent {
-  return f as unknown as ScribeAgent;
+function asAgent(f: FakeAgent): AgentRuntime {
+  return f as unknown as AgentRuntime;
 }
 
-describe("runHeadless batching", () => {
-  it("processes every utterance exactly once, in order, and flushes the tail at the end", async () => {
+const recordLine = (input: StepInput) => {
+  const u = input.fresh.at(-1)!;
+  const r = input.apply({
+    name: "record_item",
+    input: { id: `fact-line-${u.idx}`, kind: "fact", title: `Line ${u.idx}`, detail: u.text, status: "accepted", ts: u.ts, quote: u.text },
+  });
+  if (!r.ok) throw new Error(r.error);
+  return { applied: 1 };
+};
+
+describe("runHeadless (simulated live meeting)", () => {
+  it("processes every utterance exactly once, in order, then reviews once", async () => {
     const fake = new FakeAgent();
     const lines = meeting(23);
-    const s = await runHeadless(lines, { agent: asAgent(fake), batch: { minLines: 4, maxWaitSec: 1000, cueFlush: false } });
-    const seen = fake.calls.flatMap((c) => c.fresh);
-    expect(seen).toEqual(lines.map((u) => u.idx));
-    // 5 full batches of 4, then the remaining 3 flushed by finish().
-    expect(fake.calls.map((c) => c.fresh.length)).toEqual([4, 4, 4, 4, 4, 3]);
-    // Each call sees the transcript up to the end of its batch, never beyond.
+    const s = await runHeadless(lines, { agent: asAgent(fake) });
+    expect(fake.calls.flatMap((c) => c.fresh)).toEqual(lines.map((u) => u.idx));
+    // A fast agent keeps up: one turn per line, each seeing the transcript up to that line.
+    expect(fake.calls).toHaveLength(23);
     for (const c of fake.calls) expect(c.transcriptLen).toBe(c.fresh.at(-1)! + 1);
     expect(s.status).toBe("done");
     expect(s.snapshot().processedCount).toBe(23);
-    // One end-of-meeting review over the whole transcript, after the last batch.
     expect(fake.reviews).toEqual([23]);
-    expect(s.usage.calls).toBe(6);
-    expect(s.usage.costUsd).toBeCloseTo(0.06);
+    expect(s.usage.calls).toBe(23);
+    expect(s.metrics.lineLatency).toHaveLength(23);
+    for (const l of s.metrics.lineLatency) expect(l).toBeLessThan(1);
   });
 
-  it("flushes a short meeting below minLines once, at the end", async () => {
-    const fake = new FakeAgent();
-    await runHeadless(meeting(2), { agent: asAgent(fake), batch: { minLines: 4, maxWaitSec: 1000, cueFlush: false } });
-    expect(fake.calls.map((c) => c.fresh)).toEqual([[0, 1]]);
-  });
-
-  it("flushes on meeting-time max wait and on cue phrases", async () => {
-    const slow = new FakeAgent();
-    // 60s apart with a 45s max wait. Headless, the clock only advances when a line
-    // arrives, so a waiting line is flushed together with the next one.
-    await runHeadless(meeting(4, 60), { agent: asAgent(slow), batch: { minLines: 10, maxWaitSec: 45, cueFlush: false } });
-    expect(slow.calls.map((c) => c.fresh)).toEqual([[0, 1], [2, 3]]);
-
-    const cue = new FakeAgent();
-    const lines = meeting(6, 5, (i) => (i === 1 ? "OK, we're going with Postgres." : `point ${i}`));
-    await runHeadless(lines, { agent: asAgent(cue), batch: { minLines: 10, maxWaitSec: 1000, cueFlush: true } });
-    expect(cue.calls.map((c) => c.fresh)).toEqual([[0, 1], [2, 3, 4, 5]]);
+  it("hands lines spoken while the scribe is busy to its next turn", async () => {
+    // Turns take ~40 ms of (simulated) meeting time; lines arrive every 10 ms.
+    const fake = new FakeAgent(undefined, 40);
+    const lines = Array.from({ length: 20 }, (_, i) => utt(i * 0.01, "Ana", `line ${i}`, i));
+    const s = await runHeadless(lines, { agent: asAgent(fake) });
+    expect(fake.calls.flatMap((c) => c.fresh)).toEqual(lines.map((u) => u.idx));
+    expect(fake.calls.length).toBeLessThan(10);
+    expect(Math.max(...fake.calls.map((c) => c.fresh.length))).toBeGreaterThan(1);
+    expect(s.metrics.lineLatency).toHaveLength(20);
   });
 
   it("does nothing for an empty transcript", async () => {
@@ -83,9 +96,38 @@ describe("runHeadless batching", () => {
 
   it("skips the review pass when reviewOnFinish is false", async () => {
     const fake = new FakeAgent();
-    await runHeadless(meeting(5), { agent: asAgent(fake), reviewOnFinish: false, batch: { minLines: 4, maxWaitSec: 1000, cueFlush: false } });
-    expect(fake.calls.map((c) => c.fresh.length)).toEqual([4, 1]);
+    await runHeadless(meeting(5), { agent: asAgent(fake), reviewOnFinish: false });
+    expect(fake.calls).toHaveLength(5);
     expect(fake.reviews).toHaveLength(0);
+  });
+
+  it("runs the editor after architecture changes (debounced) and once at the end, not after other turns", async () => {
+    const recordDecision = (input: StepInput) => {
+      const u = input.fresh.at(-1)!;
+      input.apply({
+        name: "record_item",
+        input: { id: `dec-line-${u.idx}`, kind: "decision", title: `Decision ${u.idx}`, detail: u.text, status: "accepted", ts: u.ts, quote: u.text },
+      });
+      return { applied: 1 };
+    };
+    // Lines 10 s apart: longer than the editor debounce, so it runs after each change.
+    const changes = new FakeAgent(recordDecision, 0, true);
+    await runHeadless(meeting(3), { agent: asAgent(changes) });
+    expect(changes.edits).toBe(3 + 1);
+
+    // Lines 1 s apart: changes are coalesced into fewer editor runs.
+    const burst = new FakeAgent(recordDecision, 0, true);
+    await runHeadless(meeting(6, 1), { agent: asAgent(burst) });
+    expect(burst.edits).toBeLessThan(6);
+
+    // Facts and action items never affect the diagram.
+    const facts = new FakeAgent((input) => recordLine(input), 0, true);
+    await runHeadless(meeting(3), { agent: asAgent(facts) });
+    expect(facts.edits).toBe(1);
+
+    const quiet = new FakeAgent(undefined, 0, true);
+    await runHeadless(meeting(3), { agent: asAgent(quiet) });
+    expect(quiet.edits).toBe(1); // final pass only
   });
 
   it("applies agent operations to the live state with increasing sequence numbers", async () => {
@@ -98,10 +140,33 @@ describe("runHeadless batching", () => {
       if (!r.ok) throw new Error(r.error);
       return { applied: 1 };
     });
-    const s = await runHeadless(meeting(8), { agent: asAgent(fake), batch: { minLines: 4, maxWaitSec: 1000, cueFlush: false } });
-    expect(Object.keys(s.state.items)).toEqual(["fact-line-3", "fact-line-7"]);
-    expect(s.events.map((e) => e.seq)).toEqual([1, 2]);
-    expect(s.markdown()).toContain("point number 7");
+    const s = await runHeadless(meeting(3), { agent: asAgent(fake) });
+    expect(Object.keys(s.state.items)).toEqual(["fact-line-0", "fact-line-1", "fact-line-2"]);
+    expect(s.events.map((e) => e.seq)).toEqual([1, 2, 3]);
+    expect(s.markdown()).toContain("point number 2");
+  });
+
+  it("tells the scribe about human edits on its next turn", async () => {
+    let session: import("../src/session.js").MeetingSession | null = null;
+    const seen: string[][] = [];
+    const fake = new FakeAgent((input) => {
+      seen.push(input.notices ?? []);
+      if (input.fresh[0]!.idx === 0) {
+        session!.humanEdit({
+          name: "record_item",
+          input: { id: "dec-human", kind: "decision", title: "Human decision", detail: "Set in the UI.", status: "accepted", ts: "00:00:00", quote: "edited in UI" },
+        });
+      }
+      return {};
+    });
+    const { MeetingSession } = await import("../src/session.js");
+    session = new MeetingSession({ agent: asAgent(fake), reviewOnFinish: false, manual: true });
+    session.addUtterance({ speaker: "Ana", text: "first line", t: 0 });
+    await session.runTurn();
+    session.addUtterance({ speaker: "Ben", text: "second line", t: 5 });
+    await session.runTurn();
+    expect(seen[0]).toEqual([]);
+    expect(seen[1]!.join(" ")).toMatch(/human edit.*Human decision/);
   });
 
   it("keeps a human edit made while the agent is thinking", async () => {
@@ -120,7 +185,7 @@ describe("runHeadless batching", () => {
       return { applied: 1 };
     });
     const { MeetingSession } = await import("../src/session.js");
-    session = new MeetingSession({ agent: asAgent(fake), reviewOnFinish: false, batch: { minLines: 1, maxWaitSec: 1000, cueFlush: false } });
+    session = new MeetingSession({ agent: asAgent(fake), reviewOnFinish: false });
     session.addUtterance({ speaker: "Ana", text: "point number zero here", t: 0 });
     await session.finish();
     expect(Object.keys(session.state.items).sort()).toEqual(["dec-human", "fact-line-0"]);

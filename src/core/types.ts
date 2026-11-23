@@ -60,6 +60,12 @@ export interface Evidence {
   idx?: number;
 }
 
+/**
+ * Who made a change: the scribe agent (items, from the transcript), the editor agent
+ * (diagram and overview, from the items), or a human in the UI.
+ */
+export type Source = "agent" | "editor" | "human";
+
 export interface HistoryEntry {
   /** Meeting timestamp at which the change happened. */
   ts: string;
@@ -67,7 +73,7 @@ export interface HistoryEntry {
   from: string | null;
   to: string | null;
   reason: string | null;
-  source: "agent" | "human";
+  source: Source;
 }
 
 export interface Item {
@@ -137,6 +143,8 @@ export interface Edge {
 export interface MeetingInfo {
   title: string;
   context: string;
+  /** Short summary of the agreed design, written by the editor from live items only. */
+  overview: string;
 }
 
 export interface DocState {
@@ -154,7 +162,7 @@ export interface ChangeEvent {
   ts: string;
   /** Wall-clock ISO time it was applied. */
   at: string;
-  source: "agent" | "human";
+  source: Source;
   op: string;
   /** Ids touched. */
   targets: string[];
@@ -166,7 +174,7 @@ export interface ChangeEvent {
 
 export function emptyState(): DocState {
   return {
-    meeting: { title: "", context: "" },
+    meeting: { title: "", context: "", overview: "" },
     items: {},
     components: {},
     edges: {},

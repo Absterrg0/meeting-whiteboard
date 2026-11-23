@@ -25,9 +25,11 @@ function isLiveBasis(i: Item): boolean {
 export function basisVisibility(state: DocState, ids: string[]): ComponentVisibility {
   const all = ids.map((b) => state.items[b]).filter((x): x is Item => !!x);
   const decisions = all.filter((i) => i.kind === "decision");
-  const basis = decisions.length ? [...decisions, ...all.filter((i) => i.kind === "open_question")] : all;
-  if (basis.some(isLiveBasis)) return "active";
-  if (basis.some((b) => b.kind === "open_question" && b.status === "open")) return "tbd";
+  const basis = decisions.length ? decisions : all;
+  // An open question in the basis means "agreed that it exists, not yet what it is".
+  const openQuestion = all.some((b) => b.kind === "open_question" && b.status === "open");
+  if (basis.some(isLiveBasis)) return openQuestion ? "tbd" : "active";
+  if (openQuestion) return "tbd";
   if (basis.some((b) => b.status === "proposed")) return "proposed";
   return "retired";
 }
@@ -112,41 +114,66 @@ function itemsOf(state: DocState, pred: (i: Item) => boolean): Item[] {
   return state.order.items.map((id) => state.items[id]!).filter(pred);
 }
 
+/** "(00:10:05)" or "(00:04:12, updated 00:07:00)". */
 function cite(i: Item): string {
-  const first = i.evidence[0];
-  const last = i.evidence[i.evidence.length - 1];
+  const first = i.evidence[0]?.ts;
+  const last = i.evidence.at(-1)?.ts;
   if (!first) return "";
-  if (!last || last.ts === first.ts) return ` _(${first.ts})_`;
-  return ` _(${first.ts}; updated ${last.ts})_`;
+  return last && last !== first ? ` _(${first}, updated ${last})_` : ` _(${first})_`;
 }
 
-function bullet(i: Item, extra = ""): string {
-  return `- **${i.title}**${extra}: ${i.detail}${cite(i)}`;
+function sentence(s: string): string {
+  const t = s.trim();
+  return /[.!?)]$/.test(t) ? t : `${t}.`;
+}
+
+function why(i: Item): string {
+  return i.reason ? ` Why: ${sentence(i.reason)}` : "";
+}
+
+function cell(s: string): string {
+  return s.replace(/\|/g, "\\|").replace(/\n+/g, " ");
 }
 
 export interface RenderOptions {
   /** Include the event log as a changelog section. */
   events?: ChangeEvent[];
-  /** Optional narrative overview, generated separately from accepted state only. */
-  overview?: string | null;
 }
 
+/**
+ * The design doc. Sections hold only the current truth; everything that was replaced,
+ * turned down or settled lives in the decision log and the changelog below it.
+ */
 export function toMarkdown(state: DocState, opts: RenderOptions = {}): string {
   const out: string[] = [];
-  const title = state.meeting.title || "Design doc (in progress)";
-  out.push(`# ${title}`, "");
+  out.push(`# ${state.meeting.title || "Design doc (in progress)"}`, "");
   if (state.meeting.context) out.push(state.meeting.context, "");
 
-  if (opts.overview) out.push("## Overview", "", opts.overview, "");
+  const decisions = itemsOf(state, (i) => i.kind === "decision" && LIVE.has(i.status));
+  const tentative = decisions.filter((d) => d.status === "tentative").length;
+  const questions = itemsOf(state, (i) => i.kind === "open_question" && i.status === "open");
+  const actions = itemsOf(state, (i) => i.kind === "action_item" && i.status === "open");
+  const lastTs = opts.events?.length ? opts.events.at(-1)!.ts : null;
+  if (state.order.items.length) {
+    const parts = [
+      `${decisions.length} decision${decisions.length === 1 ? "" : "s"}${tentative ? ` (${tentative} tentative)` : ""}`,
+      `${questions.length} open question${questions.length === 1 ? "" : "s"}`,
+      `${actions.length} action item${actions.length === 1 ? "" : "s"}`,
+    ];
+    out.push(`> **Status${lastTs ? ` at ${lastTs}` : ""}:** ${parts.join(" · ")}`, "");
+  }
+
+  if (state.meeting.overview) out.push("## Summary", "", state.meeting.overview, "");
 
   const reqs = itemsOf(state, (i) => i.kind === "requirement" && LIVE.has(i.status));
   const nongoals = itemsOf(state, (i) => i.kind === "non_goal" && LIVE.has(i.status));
   const facts = itemsOf(state, (i) => i.kind === "fact" && i.status === "accepted");
   if (reqs.length || nongoals.length || facts.length) {
     out.push("## Requirements and constraints", "");
-    if (reqs.length) out.push("**Goals**", "", ...reqs.map((i) => bullet(i, i.status === "tentative" ? " (tentative)" : "")), "");
-    if (nongoals.length) out.push("**Non-goals**", "", ...nongoals.map((i) => bullet(i)), "");
-    if (facts.length) out.push("**Context and numbers**", "", ...facts.map((i) => bullet(i)), "");
+    const line = (i: Item, tag = "") => `- ${tag}${sentence(i.detail)}${cite(i)}`;
+    if (reqs.length) out.push("**Goals**", "", ...reqs.map((i) => line(i, i.status === "tentative" ? "(Tentative) " : "")), "");
+    if (nongoals.length) out.push("**Non-goals**", "", ...nongoals.map((i) => line(i)), "");
+    if (facts.length) out.push("**Context**", "", ...facts.map((i) => line(i)), "");
   }
 
   const mermaid = toMermaid(state);
@@ -157,71 +184,70 @@ export function toMarkdown(state: DocState, opts: RenderOptions = {}): string {
   if (mermaid || comps.length) {
     out.push("## Architecture", "");
     if (mermaid) out.push("```mermaid", mermaid, "```", "");
-    for (const { c, v } of comps) {
-      out.push(`- **${c.name}**${v === "tbd" ? " (TBD)" : ""}: ${c.description}`);
+    for (const { c, v } of comps) out.push(`- **${c.name}**${v === "tbd" ? " (TBD)" : ""}: ${sentence(c.description)}`);
+    out.push("");
+  }
+
+  if (decisions.length) {
+    out.push("## Decisions", "");
+    for (const d of decisions) {
+      const tag = d.status === "tentative" ? " _(tentative)_" : "";
+      out.push(`- **${d.title}**${tag}: ${sentence(d.detail)}${why(d)}${cite(d)}`);
     }
     out.push("");
   }
 
-  const decisions = itemsOf(state, (i) => i.kind === "decision" && LIVE.has(i.status));
-  if (decisions.length) {
-    out.push("## Decisions", "");
-    for (const d of decisions) {
-      const tag = d.status === "tentative" ? " (tentative, to revisit)" : "";
-      out.push(bullet(d, tag));
-      if (d.reason) out.push(`  - Why: ${d.reason}`);
-      if (d.supersedes.length) out.push(`  - Replaces an earlier decision (see Decision log)`);
+  if (questions.length) {
+    out.push("## Open questions", "");
+    for (const q of questions) out.push(`- **${q.title}**: ${sentence(q.detail)}${cite(q)}`);
+    out.push("");
+  }
+
+  if (actions.length) {
+    out.push("## Action items", "", "| Owner | Action | Due | Raised |", "|---|---|---|---|");
+    for (const a of actions) {
+      out.push(`| ${cell(a.owner ?? "Unassigned")} | ${cell(sentence(a.detail))} | ${cell(a.due ?? "—")} | ${a.evidence[0]?.ts ?? ""} |`);
     }
     out.push("");
   }
 
   const proposed = itemsOf(state, (i) => i.status === "proposed");
   if (proposed.length) {
-    out.push("## Under discussion (not decided)", "", ...proposed.map((i) => bullet(i)), "");
-  }
-
-  const questions = itemsOf(state, (i) => i.kind === "open_question" && i.status === "open");
-  if (questions.length) {
-    out.push("## Open questions", "", ...questions.map((i) => bullet(i)), "");
-  }
-
-  const actions = itemsOf(state, (i) => i.kind === "action_item" && i.status === "open");
-  if (actions.length) {
-    out.push("## Action items", "");
-    for (const a of actions) {
-      const who = a.owner ?? "Unassigned";
-      out.push(`- [ ] **${who}**: ${a.detail}${a.due ? ` (due ${a.due})` : ""}${cite(a)}`);
-    }
+    out.push("## Under discussion (not decided)", "");
+    for (const p of proposed) out.push(`- **${p.title}**: ${sentence(p.detail)}${cite(p)}`);
     out.push("");
   }
 
-  const log = itemsOf(state, (i) => ["rejected", "superseded", "dropped"].includes(i.status) || i.status === "resolved");
-  if (log.length) {
-    out.push("## Decision log", "", "Options that were considered and not kept, and questions that were settled.", "");
-    for (const i of log) {
+  const closed = itemsOf(state, (i) => ["rejected", "superseded", "resolved"].includes(i.status) || (i.status === "dropped" && i.kind !== "action_item"));
+  if (closed.length) {
+    out.push("## Decision log", "", "Options considered and not kept, and questions settled during the meeting.", "");
+    for (const i of closed) {
+      const when = i.history.findLast((h) => h.field === "status")?.ts ?? i.evidence.at(-1)?.ts ?? "";
       let what: string = i.status;
-      if (i.status === "superseded" && i.supersededBy) {
-        const by = state.items[i.supersededBy];
-        what = `superseded by "${by?.title ?? i.supersededBy}"`;
-      }
-      out.push(`- ~~${i.title}~~ (${what}): ${i.detail}${cite(i)}`);
-      if (i.reason) out.push(`  - Why: ${i.reason}`);
+      if (i.status === "superseded" && i.supersededBy) what = `superseded by "${state.items[i.supersededBy]?.title ?? i.supersededBy}"`;
+      const reason = i.reason ? `: ${sentence(i.reason)}` : ".";
+      out.push(`- **${i.title}**: ${what}${when ? ` at ${when}` : ""}${reason}`);
     }
     out.push("");
   }
 
-  if (opts.events?.length) {
+  const log = (opts.events ?? []).filter(isNotable);
+  if (log.length) {
     out.push("## Changelog", "");
-    for (const e of opts.events) {
-      if (!isNotable(e)) continue;
-      out.push(`- \`${e.ts}\`${e.source === "human" ? " (human edit)" : ""} ${e.summary}`);
-    }
+    for (const e of log) out.push(`- \`${e.ts}\`${e.source === "human" ? " (edited in UI)" : ""} ${e.summary}`);
     out.push("");
   }
   return out.join("\n");
 }
 
-/** Changes worth listing in the changelog (status changes, revisions, supersessions, removals). */
+/**
+ * Changes worth a changelog line: how items moved (status changes, revisions,
+ * supersessions, values revised during the discussion) and every human edit.
+ * New items and diagram churn are visible in the doc itself.
+ */
 export function isNotable(e: ChangeEvent): boolean {
-  return ["update_item", "supersede_item", "remove_component", "remove_edge", "record_item"].includes(e.op);
+  if (e.source === "editor") return false;
+  if (e.source === "human") return true;
+  if (e.op === "update_item" || e.op === "supersede_item") return true;
+  return e.op === "record_item" && /Revised during the discussion/.test(e.summary);
 }
