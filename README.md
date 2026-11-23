@@ -77,6 +77,12 @@ The work is split by how fast and how globally each part has to think.
 - Same decisions in, same diagram out: the diagram can't accumulate stale edits, and applying the plan twice changes nothing.
 - The summary is screened in code. Sentences that mention options that were turned down or replaced are dropped.
 
+**The fast decision layer** (`src/agent/decider.ts`, optional: `DECISION_MODEL=typesafe-ai/jev-latest`) is a "System 1" in front of the scribe. Before each scribe turn, one decision-model call (TypeSafe AI's Jev through the AI SDK's `experimental_decide`, about 0.3–0.5 s, cents per meeting) answers typed questions about the new lines:
+- *Does anything here change the design record?* If it's confidently no, the LLM turn is skipped. The lines stay pending and reach the scribe with the next lines that matter, so nothing is lost.
+- *For each open proposal: accepted, accepted for now, turned down, or neither?* A confident answer (≥ 0.85) is applied at once through the reducer, so "Agreed." shows in the doc in about a second. The scribe still runs and writes the details and reasons; it is told what was applied.
+
+The layer only picks between options built from the current state. Writing stays with the LLM, and every flip passes the same reducer checks (one live answer per topic, grounding, pinning). That is the hybrid split: a cheap, fast, typed decider for the classification-shaped steps, an LLM for language, and code for the invariants. Measured on all 9 meetings: quality was at parity (221/231 with the layer, 222/231 without, within run-to-run noise) at the same cost. 23 accept/reject flips landed in about 0.9 s instead of about 3.5 s, and on the 60- and 120-minute meetings 12–16 chatter turns skipped the LLM. It turns on automatically when `TYPESAFE_AI_API_KEY` is set (`DECISION_MODEL=off` disables it, or `openai/gpt-6-luna` uses OpenAI's decision model).
+
 **The reducer** (`src/core/reducer.ts`) validates every operation, from either agent or a human, before it touches the state. It rejects:
 - statuses that make no sense for the kind of item (an action item cannot be "accepted");
 - references to ids that don't exist;
@@ -141,10 +147,13 @@ Each configuration was run on all 9 meetings (21 to 34 checks each, 231 in total
 | v3: topics, consolidation, all roles on Sonnet 5.5 | 442/462 (95.7%) | 96% | ~3.3 s | $0.98 |
 | **v3 optimized (default)**: Sonnet 5.5 scribe, Haiku 5.5 editor, review at low effort, consolidation only after changes, one-call topic creation and reversals | **222/231 (96.1%)** | (1 run) | **~3.1 s** | **$0.51** |
 | v3 on GPT-6.1 Sol (OpenAI) | 430/462 (93.1%) | 94% | ~5.0 s | $0.59 |
+| Default + Jev decision layer (`TYPESAFE_AI_API_KEY` set) | 221/231 (95.7%) | (1 run) | ~3.3 s; accept/reject flips ~0.9 s | $0.51 |
 | Budget option: Haiku 5.5 scribe, Sonnet 5.5 review (`MODEL=anthropic/claude-haiku-5-5 REVIEW_MODEL=anthropic/claude-sonnet-5-5`) | 219/231 (94.8%) | (1 run) | ~2.9 s | $0.15 |
 \* v2's simulation did not count the 0.6 s debounce.
 
 What v3 adds over v2 is not visible in these totals, which were already high. It's in the shape of the doc (one section per question, history per topic), in stability (diagram components matched across runs went from 0.27–1.0 to 0.67–1.0), and in failure modes v2 had. Under v2, a reversal could leave two contradictory "decided" items, and a revised number could survive in a related item; under v3 the reducer and the cross-item check make both structurally impossible or flagged.
+
+**Blind test.** GPT-6 also wrote one more meeting (a video transcoding pipeline, plain `Name: text` lines without timestamps) plus an answer key, from the README only (`final-test/`). The system's doc matched every accepted decision, final value, open question, tentative item and action item in the key. That includes a declined action picked up by someone else, a lease revised from 10 to 2 minutes, and an "initial attempt plus two retries" policy. All five rejected options were recorded with their reasons, and nothing from the key's "must not appear" list appeared.
 
 The checks that still fail are mostly subtle. An action item someone declined isn't always recorded as declined. In one 120-minute run, a component the team dropped late stayed in the diagram. On the interleaved meeting, a security topic deferred "to another meeting" is sometimes recorded as decided.
 
