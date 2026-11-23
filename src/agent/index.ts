@@ -17,6 +17,11 @@ export interface AgentConfig {
   /** Editor model (diagram + overview); defaults to the scribe model. */
   editorModel: string;
   editorEffort: Effort;
+  /**
+   * Model for the periodic consolidation pass and the end-of-meeting review (defaults to the
+   * scribe model). With a small fast scribe this is where a stronger model fixes judgement.
+   */
+  reviewModel: string;
   /** Effort for the periodic consolidation pass and the end-of-meeting review. */
   reviewEffort: Effort;
   /** Scribe turns without upfront thinking (Sonnet 5.5 only); consolidation/review still think. */
@@ -45,6 +50,7 @@ export function configFromEnv(overrides: Partial<AgentConfig> = {}): AgentConfig
     effort: effortFrom(process.env.EFFORT, "medium"),
     editorModel: process.env.EDITOR_MODEL ?? defaultEditorModel(model),
     editorEffort: effortFrom(process.env.EDITOR_EFFORT, "low"),
+    reviewModel: process.env.REVIEW_MODEL ?? model,
     reviewEffort: effortFrom(process.env.REVIEW_EFFORT, "low"),
     fastThinking: process.env.FAST_THINKING === "1",
     maxSteps: 3,
@@ -53,6 +59,7 @@ export function configFromEnv(overrides: Partial<AgentConfig> = {}): AgentConfig
     contextLines: 30,
     ...overrides,
     ...(overrides.model && !overrides.editorModel && !process.env.EDITOR_MODEL ? { editorModel: defaultEditorModel(overrides.model) } : {}),
+    ...(overrides.model && !overrides.reviewModel && !process.env.REVIEW_MODEL ? { reviewModel: overrides.model } : {}),
   };
 }
 

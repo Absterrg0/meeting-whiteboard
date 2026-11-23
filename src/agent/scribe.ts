@@ -64,6 +64,8 @@ export interface StepResult {
 export interface ScribeConfig {
   model: string;
   effort: Effort;
+  /** Model for consolidation/review passes (defaults to model). */
+  reviewModel?: string;
   /** Effort for consolidation/review passes (defaults to effort). */
   reviewEffort?: Effort;
   /** Hot path without upfront thinking where the model supports it (Sonnet 5.5 between_tools). */
@@ -133,6 +135,7 @@ export function describeItems(state: DocState): string {
 
 export class Scribe {
   readonly ref: ModelRef;
+  readonly reviewRef: ModelRef;
   private history: ModelMessage[] = [];
   private turnsSinceCheckpoint = 0;
   private lastInputTokens = 0;
@@ -142,6 +145,7 @@ export class Scribe {
 
   constructor(public config: ScribeConfig) {
     this.ref = parseModel(config.model);
+    this.reviewRef = parseModel(config.reviewModel ?? config.model);
   }
 
   /** Tool set is built once so its definitions (and the cached prefix) never change. */
@@ -281,15 +285,16 @@ export class Scribe {
     const messages: ModelMessage[] = [...history, { role: "user", content: text }];
 
     try {
+      const review = input.mode === "review" || input.mode === "consolidate";
+      const ref = review ? this.reviewRef : this.ref;
       const res = streamText({
-        model: languageModel(this.ref),
+        model: languageModel(ref),
         instructions: { role: "system", content: SCRIBE_PROMPT, providerOptions: CACHE_BREAKPOINT },
         messages,
         tools: this.toolSet(),
-        providerOptions:
-          input.mode === "review" || input.mode === "consolidate"
-            ? providerOptions(this.ref, this.config.reviewEffort ?? this.config.effort)
-            : providerOptions(this.ref, this.config.effort, { fastThinking: this.config.fastThinking }),
+        providerOptions: review
+          ? providerOptions(ref, this.config.reviewEffort ?? this.config.effort)
+          : providerOptions(ref, this.config.effort, { fastThinking: this.config.fastThinking }),
         maxOutputTokens: 16000,
         abortSignal: input.signal,
         // Only go back to the model when a call failed validation, so it can fix it.
@@ -308,7 +313,7 @@ export class Scribe {
       // responseMessages = every step's assistant and tool messages (not just the last step),
       // so the conversation keeps the calls that succeeded before a correction round.
       const [steps, responseMessages, text2] = await Promise.all([res.steps, res.responseMessages, res.text]);
-      for (const s of steps) addUsage(usage, s.usage, this.ref);
+      for (const s of steps) addUsage(usage, s.usage, ref);
       this.lastInputTokens = steps.at(-1)?.usage.inputTokens ?? 0;
       const last = steps.at(-1);
       if (last?.content.some((p) => p.type === "tool-error") && steps.length >= this.config.maxSteps) {

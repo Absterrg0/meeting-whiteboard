@@ -402,6 +402,7 @@ async function main() {
   const config = configFromEnv({
     ...(arg("model") ? { model: arg("model")! } : {}),
     ...(arg("editor-model") ? { editorModel: arg("editor-model")! } : {}),
+    ...(arg("review-model") ? { reviewModel: arg("review-model")! } : {}),
     ...(effortArg(arg("effort")) ? { effort: effortArg(arg("effort"))! } : {}),
     ...(effortArg(arg("editor-effort")) ? { editorEffort: effortArg(arg("editor-effort"))! } : {}),
   });
@@ -409,7 +410,7 @@ async function main() {
   const concurrency = Math.max(1, Number(arg("concurrency") ?? 4));
   const stamp = new Date().toISOString().replace(/[:.]/g, "-");
   console.log(
-    `Evaluating ${selected.join(", ")} x${runs} with scribe ${config.model} (${config.effort}), editor ${config.editorModel} (${config.editorEffort}); judge ${JUDGE_MODEL.spec}\n`,
+    `Evaluating ${selected.join(", ")} x${runs} with scribe ${config.model} (${config.effort}), review ${config.reviewModel} (${config.reviewEffort}), editor ${config.editorModel} (${config.editorEffort}); judge ${JUDGE_MODEL.spec}\n`,
   );
 
   const tasks = selected.flatMap((n) =>
