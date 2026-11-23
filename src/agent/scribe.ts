@@ -233,11 +233,9 @@ export class Scribe {
       return r;
     };
 
-    const messages: ModelMessage[] = [
-      ...history,
-      // Cache breakpoint on the newest message: the next turn reads all of this from cache.
-      { role: "user", content: [{ type: "text", text, providerOptions: CACHE_BREAKPOINT }] },
-    ];
+    // Sent exactly as it will be stored: the history must stay byte-identical (append-only)
+    // for the cache and for the model's earlier thinking blocks to stay valid.
+    const messages: ModelMessage[] = [...history, { role: "user", content: text }];
 
     try {
       const res = streamText({
@@ -258,7 +256,9 @@ export class Scribe {
       for await (const part of res.fullStream) {
         if (part.type === "error") throw part.error instanceof Error ? part.error : new Error(String(part.error));
       }
-      const [steps, response, text2] = await Promise.all([res.steps, res.response, res.text]);
+      // responseMessages = every step's assistant and tool messages (not just the last step),
+      // so the conversation keeps the calls that succeeded before a correction round.
+      const [steps, responseMessages, text2] = await Promise.all([res.steps, res.responseMessages, res.text]);
       for (const s of steps) addUsage(usage, s.usage, this.ref);
       this.lastInputTokens = steps.at(-1)?.usage.inputTokens ?? 0;
       const last = steps.at(-1);
@@ -268,7 +268,7 @@ export class Scribe {
       errors.unshift(...this.stepErrors);
       return {
         step: { applied, errors, note: text2.trim(), usage },
-        messages: response.messages,
+        messages: responseMessages,
       };
     } finally {
       this.currentApply = null;

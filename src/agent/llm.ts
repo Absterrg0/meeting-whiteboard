@@ -8,7 +8,8 @@ import { anthropic } from "@ai-sdk/anthropic";
 import { openai } from "@ai-sdk/openai";
 import type { LanguageModel } from "ai";
 
-type ProviderOptions = Record<string, Record<string, string | number | boolean | Record<string, string>>>;
+type JSONValue = string | number | boolean | null | JSONValue[] | { [k: string]: JSONValue };
+type ProviderOptions = Record<string, Record<string, JSONValue>>;
 
 export type Provider = "anthropic" | "openai";
 export type Effort = "low" | "medium" | "high";
@@ -42,15 +43,29 @@ export function hasKey(ref: ModelRef): boolean {
   return ref.provider === "anthropic" ? !!process.env.ANTHROPIC_API_KEY : !!process.env.OPENAI_API_KEY;
 }
 
-/** Provider options for a call: reasoning effort, adaptive thinking on Claude. */
+/**
+ * Provider options for a call.
+ * Anthropic: adaptive thinking at the given effort, and top-level automatic prompt caching
+ * (the cache breakpoint moves to the end of each request by itself, so no per-message
+ * markers are needed and the stored conversation stays byte-identical to what was sent;
+ * thinking blocks are bound to that exact prefix). `drop_block` is only a safety net:
+ * if a prefix ever differs, stale thinking is dropped instead of failing the request.
+ * OpenAI: reasoning effort; prefix caching is automatic.
+ */
 export function providerOptions(ref: ModelRef, effort: Effort): ProviderOptions {
   if (ref.provider === "anthropic") {
-    return { anthropic: { effort, thinking: { type: "adaptive" } } };
+    return {
+      anthropic: {
+        effort,
+        thinking: { type: "adaptive", blockBinding: { prefixMismatchBehavior: "drop_block" } },
+        cacheControl: { type: "ephemeral" },
+      },
+    };
   }
   return { openai: { reasoningEffort: effort } };
 }
 
-/** Marks a message or part as the end of a cacheable prefix (Anthropic); OpenAI caches prefixes automatically. */
+/** Cache breakpoint for the (constant) system prompt on Anthropic; OpenAI caches prefixes automatically. */
 export const CACHE_BREAKPOINT = { anthropic: { cacheControl: { type: "ephemeral" as const } } };
 
 // ---------- usage and cost ----------

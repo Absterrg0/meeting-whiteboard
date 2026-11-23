@@ -1,129 +1,159 @@
 # Meeting Whiteboard
 
-An agent that sits in a technical meeting and keeps a design doc and an architecture diagram correct as the discussion moves, including when the team changes its mind.
+An agent that joins a technical meeting and keeps a design doc and an architecture diagram correct while people talk, including when the team changes its mind.
 
-It takes a meeting as it happens (a transcript replayed in real time or faster, or lines typed live), and maintains:
+It takes the meeting as it happens: a transcript replayed in real time (any common export format), your microphone or a meeting tab's audio, or a bot that joins a Zoom / Google Meet / Teams call. From that it maintains:
 
-- a **design doc**: context, goals and non-goals, architecture, accepted decisions with their reasons, open questions, action items, a decision log of rejected and superseded options, and a changelog;
-- a **diagram** (Mermaid) that only shows what the team agreed on, with undecided parts drawn as TBD;
-- an **audit trail**: every change is an event tied to the moment in the meeting that caused it, with a verbatim quote.
+- a **design doc**: summary, requirements and constraints, architecture, decisions with their reasons, open questions, action items, a decision log of what was turned down or replaced, and a changelog;
+- a **diagram** (Mermaid) of the design the team agreed on, with undecided parts drawn as TBD and rejected options never shown;
+- an **audit trail**: every change is an event tied to the line that caused it, with a verbatim quote.
 
 ## Quick start
 
-Requirements: Node 20+ and pnpm. An Anthropic API key.
+Requirements: Node 20+, pnpm, and an Anthropic or OpenAI API key.
 
 ```bash
 pnpm install
-cp .env.example .env          # then put your ANTHROPIC_API_KEY in .env
-pnpm start                    # builds the UI and serves it on http://localhost:8787
+cp .env.example .env     # put ANTHROPIC_API_KEY (and/or OPENAI_API_KEY) in .env
+pnpm start               # builds the UI and serves it on http://localhost:8787
 ```
 
-In the UI: pick a transcript (or paste one), pick a speed, press Start. You can type lines into the meeting at any time with the inject box (for example a reversal: "Actually, let's make it seven days"), and correct the agent from the Decisions tab.
-
-Other entry points:
+In the UI, pick a transcript (or paste/upload one), a speed, and press Start. Or choose **Go live** (microphone / meeting tab audio) or **Join a meeting** (bot). Type into the meeting at any time with the box under the transcript, e.g. "Actually, let's make it seven days", and correct the agent in the Decisions tab.
 
 ```bash
-pnpm dev                                            # server + Vite dev server with hot reload
-pnpm replay transcripts/webhooks-design-review.jsonl # headless run; writes out/<run>/design-doc.md, state.json, events.jsonl
-pnpm eval                                           # replays the held-out meetings and grades the result
-pnpm test                                           # unit tests (no network)
+pnpm dev                                    # server + Vite dev server with hot reload
+pnpm replay transcripts/adv-flipflop.jsonl  # headless run: prints each change, writes out/<run>/design-doc.md, state.json, events.jsonl
+pnpm eval --runs 2                          # replays every meeting with expected outcomes, grades, reports stability across runs
+pnpm test                                   # unit tests, no network
 ```
 
-Transcript formats accepted: JSONL (`{"time": "00:01:10", "speaker": "...", "text": "..."}` per line), a JSON array of the same, plain lines like `[00:01:10] Name: text`, or a markdown table `| time | speaker | text |`.
+**Models.** Any Anthropic or OpenAI model, set as `<provider>/<model>`:
 
-Model settings (in `.env` or the environment): `MODEL` (default `claude-sonnet-5-5`), `EFFORT` (`low` | `medium` | `high`, default `medium`). A full replay of the 29-minute sample costs about $0.60 with the defaults.
+```bash
+MODEL=anthropic/claude-sonnet-5-5   EFFORT=medium   # default
+MODEL=anthropic/claude-opus-5-5     EFFORT=low
+MODEL=openai/gpt-6-luna             EFFORT=medium
+EDITOR_MODEL=...  EDITOR_EFFORT=...                 # optional: a different model for the diagram/summary
+```
+
+The same flags work on the CLI and the eval: `--model`, `--effort`, `--editor-model`, `--editor-effort`.
+
+Live sources (microphone, meeting tab, Recall.ai bot) are described in [docs/live-sources.md](docs/live-sources.md).
 
 ## How it works
 
 ```
- transcript source ──▶ batcher ──▶ agent step ──▶ reducer ──▶ state + event log ──▶ doc.md / diagram / UI
- (replay | live)      (serial)    (LLM + tools)  (validates,        ▲
-                                                   grounds)          └── human edits (same operations)
+ sources                          scribe (every speaker turn)                    state                     views
+ ─────────                        ───────────────────────────                    ─────                     ─────
+ transcript replay ─┐             one append-only conversation:                  items                     design-doc.md
+ mic / tab audio ───┼─ session ─▶ new lines in → tool calls out ── reducer ──▶   components, edges   ──▶   Mermaid diagram
+ meeting bot ───────┤  (serial)   (cached prefix; calls applied   (validates,    event log                 web UI (SSE)
+ typed lines ───────┘             as they stream)                  grounds)        ▲    │
+                                                                                   │    ▼ items changed (debounced)
+                                  editor (debounced) ── whole diagram + summary ───┘  diff applied by code
+                                  human edits in the UI ─────────── same operations, pinned
 ```
 
-1. **Batcher** (`src/session.ts`). Lines are buffered and handed to the agent when 4 are waiting, when the oldest has waited 45 s of meeting time, or straight away when a line sounds like a decision ("let's go with", "changing that", "let's drop"...). The cue list only makes updates faster; it never decides anything. The agent runs serially; if it is slow, lines pile up and go into the next batch. A failed model call is retried with the same lines; after three failures in a row the lines are skipped and the skip is logged, so one bad batch cannot stall the meeting.
-2. **Agent step** (`src/agent/`). One model call per batch with: the current state (compact), the last ~24 already-processed lines for context, and the new lines. The model answers with tool calls, one per change: `record_item`, `update_item`, `supersede_item`, `upsert_component`, `remove_component`, `upsert_edge`, `remove_edge`, `set_meeting_info`. Each call is applied to the live session state as it arrives (the UI updates call by call), and validation errors go back to the model as tool errors so it can correct itself (up to 4 rounds per batch). The agent never holds its own copy of the state, so a human edit made while the model is thinking is not overwritten.
-3. **Reducer** (`src/core/reducer.ts`). Validates each operation and applies it to the state. It rejects:
-   - statuses that make no sense for the kind of item (an action item cannot be "accepted");
-   - references to ids that do not exist;
-   - superseding something already rejected;
-   - and any agent change whose quote (at least three words) cannot be found within 90 s of the cited timestamp. A quote with a wrong timestamp is accepted only if it is an exact match of five or more words (`src/core/grounding.ts`). That is the guard against the model writing things nobody said.
-4. **Projections** (`src/core/render.ts`). The doc and the diagram are pure functions of the state. Revisions overwrite the current value and the old one goes to the item's history, so an old value cannot linger in the doc. It only shows up in the changelog.
-5. **End-of-meeting review.** When the meeting ends, one more pass looks at the full transcript and the state and fixes what incremental processing tends to miss: a sketch the team adopted without saying "agreed", stale component descriptions, duplicates. It uses the same tools and checks.
+The work is split by how fast and how globally each part has to think.
+
+**The scribe** (`src/agent/scribe.ts`) turns what is said into item operations: `record_item`, `update_item`, `supersede_item`, `set_meeting_info`.
+- It runs after every speaker turn. Lines that arrive while it is busy go into its next turn, so a slow call never drops input or builds a queue.
+- It keeps **one append-only conversation per meeting**, so each turn sends only the new lines. Everything before them is a cached prefix, which keeps the time to first token and the cost flat as the meeting goes on. After 40 turns or 60k tokens it restarts from a snapshot of the state, so long meetings stay bounded.
+- Each tool call is **applied while the response is still streaming**, so the doc updates call by call. The model gets a second round only when a call fails validation.
+
+**The editor** (`src/agent/editor.ts`) maintains the diagram and the summary.
+- It runs when architecture-relevant items change: debounced by 4 s, at most 15 s behind, and once at the end.
+- It is **declarative**. Given all the items and the current diagram, the model returns the *complete* intended diagram and summary. Code diffs that against the current diagram and applies only the difference.
+- Same decisions in, same diagram out: the diagram can't accumulate stale edits, and applying the plan twice changes nothing.
+- The summary is screened in code. Sentences that mention options that were turned down or replaced are dropped.
+
+**The reducer** (`src/core/reducer.ts`) validates every operation, from either agent or a human, before it touches the state. It rejects:
+- statuses that make no sense for the kind of item (an action item cannot be "accepted");
+- references to ids that don't exist;
+- reviving a superseded item in place (going back to an old option is a new decision that supersedes the current one);
+- an agent change whose quote (three or more words, or a short exact phrase) is not found within 90 s of the cited time. This is the guard against writing things nobody said (`src/core/grounding.ts`);
+- a revision that leaves the replaced number in the item's title or rationale ("7 days" → "14 days" with a title still saying 7). Deterministic, so **an old value cannot linger** in the doc; it lives only in the history and the changelog.
+
+**The projections** (`src/core/render.ts`) are pure functions of the state. Current sections show only current values; replaced, rejected and settled things go to the decision log.
+
+**At the end** the scribe runs one review pass over the full transcript (adopted-but-unmarked proposals, stale wording, duplicates), then the editor runs once more.
 
 ### The state
 
-Items have a kind (`requirement`, `non_goal`, `fact`, `decision`, `open_question`, `action_item`) and a status (`proposed`, `accepted`, `tentative`, `rejected`, `superseded`, `open`, `resolved`, `done`, `dropped`). Every item keeps its evidence (timestamp, speaker, quote), its history of changes with reasons, and `supersedes` / `supersededBy` links.
+Items have a kind (`requirement`, `non_goal`, `fact`, `decision`, `open_question`, `action_item`) and a status (`proposed`, `accepted`, `tentative`, `rejected`, `superseded`, `open`, `resolved`, `done`, `dropped`). Each keeps its evidence (time, speaker, quote), its history of changes with reasons, and its supersede links.
 
-Components and edges carry a **basis**: the item ids that put them in the design. Visibility is derived, not remembered by the model:
+Diagram components and edges carry a **basis**: the item ids that put them in the design. Visibility is derived from the basis, not remembered by a model:
 
-| Basis items | Diagram |
+| Basis | Diagram |
 |---|---|
-| at least one accepted or tentative decision (or requirement, if there are no decisions in the basis) | shown |
-| only an open question | shown dashed as TBD |
-| only proposals | hidden (shown greyed with "show proposals") |
-| all rejected or superseded | gone |
+| an accepted or tentative decision (decisions dominate other kinds) | shown |
+| ...and an open question about what it is ("which store?") | shown dashed as TBD |
+| only proposals | hidden (greyed under "show proposals") |
+| only rejected / superseded items, or only facts about today's system | gone |
 
-If a basis contains decisions, only the decisions count, so when the team drops the option a component depended on, the component leaves the diagram even if the model forgets to remove it. Facts ("today a nightly job rebuilds the index") never put anything on the diagram: it shows the target design, not the system being replaced.
+### The rules the scribe applies
 
-### Rules the agent follows (see `src/agent/prompt.ts`)
-
-- "What if we...", "I'd use..." is a proposal. Agreement makes a decision: an explicit call, an explicit endorsement, or the team building on it without objection. Job titles do not matter.
-- "For now, revisit later" is tentative. "Not deciding that today" is an open question, usually with an action item.
-- A reversal records the new decision and supersedes the old one with the reason. A revised number rewrites the detail; the old value lives only in history and the changelog.
-- Small talk is ignored. Due dates are kept exactly as said ("by Friday").
+These are in `src/agent/prompt.ts`, as a status rubric applied the same way every time.
+- "What if we..." is a proposal. Hypotheticals, illustrations and sarcasm are not recorded at all.
+- An explicit call or an explicit endorsement makes a decision; so does the group building on a proposal without objection. Job titles don't count.
+- "For now", "for v1, revisit", "unless the load test fails" make it tentative.
+- "Not deciding today" or a debate with no conclusion makes an open question.
+- One item per independent choice, so a reversal of one can supersede just that one.
+- A revised value updates the existing item. A relative change ("double it") is resolved to the number.
+- A reason is only recorded if someone gave one; "the team agreed" is not a reason.
 
 ### Human corrections
 
-Every item in the Decisions tab can be accepted, rejected, dropped or edited, and new items can be added. A human edit goes through the same reducer as an event with `source: human` and pins the item. The agent can still change a pinned item, but only with a quote from a line said *after* the human edit (checked by transcript position), so a correction is not overwritten by the agent re-reading the same discussion, while a later revisit in the meeting still gets picked up. A superseded item cannot be revived in place; going back to an old option is recorded as a new decision that supersedes the current one, so the history stays linear.
+In the Decisions tab any item can be accepted, rejected, dropped or edited, and new items can be added. An edit goes through the same reducer as an event with `source: human`, pins the item, and is passed to the scribe as a notice on its next turn. The agent can still change a pinned item, but only with a quote from a line said after the edit. So a correction survives the agent re-reading the same discussion, while a real revisit later in the meeting is still picked up.
 
-The model's rationale for an item ("Why") is kept separate from the reason for a change. When a value is revised, the change reason ("from 12 to 32 partitions because...") goes to the changelog, and the item's rationale is restated or dropped, so an old value cannot come back through the "Why" line.
+## Results
+
+`transcripts/webhooks-design-review.jsonl` is the sample from the brief and was the dev set. Everything else is held out:
+
+- three meetings I wrote early on (offline sync, search-index CDC, rate-limit smoke test);
+- **six harder meetings written by a different model family (GPT-6), from the README only, without seeing the prompts**: speech-to-text-style mess, A→B→A flip-flops, hypotheticals and sarcasm, interleaved topics, and 60- and 120-minute meetings with late reversals.
+
+`pnpm eval` replays each as a simulated live meeting: each model call takes as much meeting time as it really took, so batch sizes and lag match a real-time run. It grades deterministic checks (e.g. "the old value must not appear in the current doc", "the removed service is not in the diagram") plus an LLM judge.
+
+RESULTS_TABLE
 
 ## Design choices and trade-offs
 
 | Choice | Why | Cost |
 |---|---|---|
-| Explicit state + operations, not "rewrite the doc" | Each change is checkable, attributable to a moment, reversible, and listed in a changelog. Per-call cost stays flat regardless of meeting length. | More schema and code than a single summarization prompt. |
-| Rendered doc, not model-written prose | Old values cannot survive a revision; the doc structure is stable between updates. | The prose is plainer than a hand-written doc. Item details are written by the model, which keeps them readable. |
-| Diagram visibility derived from decision status | The diagram cannot show a rejected option as chosen, and drops components when their basis goes away. | The model must link components to items (enforced by the reducer). |
-| Grounding check on every agent change | Cheap, deterministic protection against invented content. | Occasionally a paraphrased quote is rejected and costs a retry round. |
-| Batches of a few lines, not every line | Decisions span several turns; a little context avoids flip-flopping and saves calls. | Updates lag the conversation by up to ~45 s of meeting time (less after a decision cue). |
-| Sonnet 5.5 at medium effort by default | Fast enough to keep up in real time; ~$0.60 per 30-minute meeting. | Opus is available with `MODEL=claude-opus-5-5`. |
+| Explicit state + operations, not "rewrite the doc" | Each change is checkable, tied to a line, reversible and listed in the changelog. Cost per turn doesn't grow with the meeting. | More schema and code than one summarisation prompt. |
+| Scribe and editor split | The scribe needs low latency and local context; the diagram needs the whole picture. One agent doing both was slow and drifted. | Two prompts; the diagram trails the doc by a few seconds. |
+| Declarative editor + code diff | Same inputs give the same diagram, and nothing stale accumulates. | The editor re-reads all items each run, though it is debounced. |
+| Append-only, cached scribe conversation | Latency and cost stay flat; the model sees its own earlier calls. | Restarts from a snapshot on long meetings. |
+| Deterministic guards (grounding, stale values, status rules) | Failure modes that matter can't depend on the model behaving. | A rejected call costs a correction round. |
+| Rendered doc, not model prose | Old values can't survive a revision; structure is stable. | Prose is plainer; the editor's summary covers the narrative. |
+| Sonnet 5.5, medium effort by default | Keeps up in real time; see results for cost. | `gpt-6-luna` is far cheaper; Opus is slower. |
 
 ## Assumptions
 
-- One meeting per session. The doc starts empty; carrying it across meetings is listed under next steps.
+- One meeting per session; the doc starts empty.
 - Agreement is judged from what people say, not from roles.
-- The transcript already has speaker names (from a meeting platform or diarization). Live audio capture is out of scope; the inject box stands in for it.
-- Timestamps in the transcript are meeting-relative.
-
-## Evaluation
-
-`transcripts/webhooks-design-review.jsonl` is the sample meeting from the brief and was the dev set. To check the system is not tuned to it, `transcripts/` also has meetings in other domains, written for this project, with expected outcomes in `expected/`. `pnpm eval` replays them and grades the result with deterministic checks (e.g. "the old retention value must not appear in the current doc", "the removed service must not be in the diagram") plus an LLM judge for checks that need reading comprehension.
+- With live audio, speakers are set with the "Speaking now" chips, because realtime transcription has no diarization. The meeting bot gets real names from the platform.
 
 ## What I would do next
 
-- **Long meetings**: summarize processed transcript into a rolling digest so context stays small, and run the review pass periodically (e.g. every 10 minutes) rather than only at the end.
-- **Live audio**: a streaming speech-to-text source with diarization (the `MeetingSession.addUtterance` interface is already the seam), or a meeting bot.
-- **Multi-meeting docs**: load a previous meeting's state as the starting point; treat it as baseline that the new meeting can revise.
-- **Confidence and review queue**: let the agent mark low-confidence changes for a human to confirm instead of applying them straight away.
-- **Export**: push the doc to Notion/Confluence/GitHub and the diagram as an image; open a PR when a decision changes.
-- **Eval**: more meetings, multiple runs per meeting to measure variance, and per-trap scores tracked over prompt changes.
+- **Confidence and a review queue**: let the scribe mark low-confidence changes for a person to confirm.
+- **Diagram stability**: give the editor a canonical component inventory carried between meetings, and vote over two editor samples on borderline edges.
+- **Multi-meeting docs**: load a previous meeting's state as the baseline the next meeting revises.
+- **Production**: persistent sessions (Postgres for the event log), auth, per-team docs, export to Notion/Confluence/GitHub (a PR when a decision changes), cost caps per meeting, tracing.
 
 ## Repository layout
 
 ```
-src/core/       types, operations (zod), reducer, grounding, renderers   — no model calls
-src/agent/      prompt, tools, agent step loop, review pass
-src/ingest/     transcript parsing
-src/session.ts  batcher, meeting clock, replay, human edits, outputs
+src/core/       types, operations (zod), reducer + guards, grounding, renderers   (no model calls)
+src/agent/      scribe, editor, prompts, provider layer (Vercel AI SDK: Anthropic, OpenAI)
+src/session.ts  scheduling, meeting clock, replay, simulated-live headless runs, human edits, outputs
+src/ingest/     transcript format detection and parsing
+src/live/       browser audio relay to OpenAI realtime transcription, Recall.ai bot, tunnel
 src/server.ts   HTTP API + SSE for the UI
-src/cli.ts      headless replay
-src/eval.ts     replay + grading against expected/
-web/            React UI
-transcripts/    sample + held-out meetings
-expected/       expected outcomes for the held-out meetings
-test/           unit tests
+src/cli.ts      headless replay        src/eval.ts   multi-run eval with stability metrics
+web/            React UI               transcripts/, expected/   meetings and expected outcomes
+test/           unit tests             docs/live-sources.md      live input details
 ```
 
 ## How the time was spent
