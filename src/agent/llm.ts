@@ -52,8 +52,12 @@ export function hasKey(ref: ModelRef): boolean {
  * if a prefix ever differs, stale thinking is dropped instead of failing the request.
  * OpenAI: reasoning effort; prefix caching is automatic.
  */
-export function providerOptions(ref: ModelRef, effort: Effort): ProviderOptions {
+export function providerOptions(ref: ModelRef, effort: Effort, opts: { fastThinking?: boolean } = {}): ProviderOptions {
   if (ref.provider === "anthropic") {
+    // Sonnet 5.5's lightest mode: no upfront thinking, only short notes between tool calls.
+    if (opts.fastThinking && ref.id === "claude-sonnet-5-5" && effort !== "high") {
+      return { anthropic: { effort, thinking: { type: "between_tools" }, cacheControl: { type: "ephemeral" } } };
+    }
     return {
       anthropic: {
         effort,

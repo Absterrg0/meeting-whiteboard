@@ -198,7 +198,7 @@ describe("consolidation", () => {
     const modes: string[] = [];
     const fake = new FakeAgent((input) => {
       modes.push(input.mode ?? "batch");
-      return {};
+      return recordLine(input);
     });
     const origStep = fake.step.bind(fake);
     fake.step = async (input: StepInput) => {
@@ -208,8 +208,19 @@ describe("consolidation", () => {
       }
       return origStep(input);
     };
-    // 13 lines, 60 s apart: 12 minutes of meeting, so two consolidations (at ~5 and ~10 min).
-    await runHeadless(meeting(13, 60), { agent: asAgent(fake), reviewOnFinish: false });
+    // 25 lines, 60 s apart: 24 minutes of meeting with changes, so passes at ~10 and ~20 min.
+    await runHeadless(meeting(25, 60), { agent: asAgent(fake), reviewOnFinish: false });
     expect(modes.filter((m) => m === "consolidate")).toHaveLength(2);
+
+    // A quiet meeting (no changes) gets no consolidation at all.
+    const quietModes: string[] = [];
+    const quiet = new FakeAgent();
+    const qStep = quiet.step.bind(quiet);
+    quiet.step = async (input: StepInput) => {
+      if (input.mode === "consolidate") quietModes.push("consolidate");
+      return qStep(input);
+    };
+    await runHeadless(meeting(25, 60), { agent: asAgent(quiet), reviewOnFinish: false });
+    expect(quietModes).toHaveLength(0);
   });
 });

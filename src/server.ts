@@ -23,7 +23,7 @@ import { emptyState, formatTs, parseTs, type ChangeEvent, type ChangeKind, type 
 import { parseTranscriptDetailed, TranscriptParseError, type ParseResult } from "./ingest/transcript.js";
 import { attachAudioRelay } from "./live/audioRelay.js";
 import { apiGuard } from "./live/guard.js";
-import { WEBHOOK_PATH } from "./live/recall.js";
+import { BOT_WEBHOOK_PATHS, botNeedsTunnel } from "./live/bots.js";
 import { registerLiveRoutes } from "./live/routes.js";
 import { ensurePublicUrl, stopTunnel } from "./live/tunnel.js";
 import { MeetingSession, percentile } from "./session.js";
@@ -333,7 +333,7 @@ const app = new Hono();
 // POSTs must be JSON (forces a CORS preflight cross-origin) and same-origin when an Origin is sent.
 // Requests that arrive through a tunnel (for Recall) can only reach the Recall webhook, which is
 // protected by a per-bot token and, if configured, Recall's signature (src/live/recall.ts).
-app.use("*", apiGuard([WEBHOOK_PATH]));
+app.use("*", apiGuard(BOT_WEBHOOK_PATHS));
 
 app.onError((err, c) => {
   console.error(err);
@@ -618,7 +618,7 @@ const server = serve({ fetch: app.fetch, port: PORT, hostname: HOST }, (info) =>
 // Browser audio for live transcription (WebSocket on the same port).
 attachAudioRelay(server as unknown as import("node:http").Server, { getSession: (id) => sessions.get(id) });
 // With a Recall key and no PUBLIC_URL, open the quick tunnel now so it is reachable by the time a bot is sent.
-if (process.env.RECALL_API_KEY && !process.env.PUBLIC_URL && process.env.AUTO_TUNNEL !== "0") {
+if (botNeedsTunnel() && !process.env.PUBLIC_URL && process.env.AUTO_TUNNEL !== "0") {
   ensurePublicUrl(PORT).catch((e: Error) => console.warn(`tunnel not started: ${e.message.split("\n")[0]}`));
 }
 

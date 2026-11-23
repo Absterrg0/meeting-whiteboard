@@ -61,7 +61,17 @@ export const RecordItem = z.object({
   topic: id
     .nullable()
     .optional()
-    .describe("Topic id (top-...) this item belongs to. Create the topic with upsert_topic first. Null for meeting-wide items."),
+    .describe("Topic id (top-...) this item belongs to. Null for meeting-wide items."),
+  topic_title: z
+    .string()
+    .min(2)
+    .max(60)
+    .optional()
+    .describe("If the topic does not exist yet: its title (1-4 words). The topic is created with this item; no upsert_topic call needed."),
+  topic_question: z.string().min(3).max(160).optional().describe("With topic_title: the question the new topic answers."),
+  replaces: id
+    .optional()
+    .describe("Id of the topic's current answer that this decision replaces (a reversal). Done atomically: the old one becomes superseded, this one becomes the live answer."),
   confidence: z
     .enum(["high", "low"])
     .optional()

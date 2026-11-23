@@ -11,6 +11,7 @@
  * Tool calls are applied to the live session state as they stream in. The model only
  * gets a second round when one of its calls failed validation.
  */
+import { performance } from "node:perf_hooks";
 import { streamText, tool, type ModelMessage, type ToolSet } from "ai";
 import { OPS } from "../core/ops.js";
 import type { Op } from "../core/ops.js";
@@ -56,11 +57,17 @@ export interface StepResult {
   errors: string[];
   note: string;
   usage: Usage;
+  /** Where the time went (ms from the start of the call). */
+  timing?: { firstTokenMs: number | null; firstChangeMs: number | null; totalMs: number; rounds: number };
 }
 
 export interface ScribeConfig {
   model: string;
   effort: Effort;
+  /** Effort for consolidation/review passes (defaults to effort). */
+  reviewEffort?: Effort;
+  /** Hot path without upfront thinking where the model supports it (Sonnet 5.5 between_tools). */
+  fastThinking?: boolean;
   /** Max model rounds per turn (1 + correction rounds after validation errors). */
   maxSteps: number;
   /** Restart the conversation from a state snapshot after this many turns... */
@@ -255,9 +262,15 @@ export class Scribe {
     const errors: string[] = [];
     let applied = 0;
     this.stepErrors = [];
+    const t0 = performance.now();
+    let firstTokenMs: number | null = null;
+    let firstChangeMs: number | null = null;
     this.currentApply = (op) => {
       const r = input.apply(op);
-      if (r.ok) applied++;
+      if (r.ok) {
+        applied++;
+        firstChangeMs ??= performance.now() - t0;
+      }
       return r;
     };
 
@@ -271,7 +284,10 @@ export class Scribe {
         instructions: { role: "system", content: SCRIBE_PROMPT, providerOptions: CACHE_BREAKPOINT },
         messages,
         tools: this.toolSet(),
-        providerOptions: providerOptions(this.ref, this.config.effort),
+        providerOptions:
+          input.mode === "review" || input.mode === "consolidate"
+            ? providerOptions(this.ref, this.config.reviewEffort ?? this.config.effort)
+            : providerOptions(this.ref, this.config.effort, { fastThinking: this.config.fastThinking }),
         maxOutputTokens: 16000,
         abortSignal: input.signal,
         // Only go back to the model when a call failed validation, so it can fix it.
@@ -283,6 +299,9 @@ export class Scribe {
       });
       for await (const part of res.fullStream) {
         if (part.type === "error") throw part.error instanceof Error ? part.error : new Error(String(part.error));
+        if (firstTokenMs === null && ["text-delta", "reasoning-delta", "tool-input-start", "tool-call"].includes(part.type)) {
+          firstTokenMs = performance.now() - t0;
+        }
       }
       // responseMessages = every step's assistant and tool messages (not just the last step),
       // so the conversation keeps the calls that succeeded before a correction round.
@@ -295,7 +314,13 @@ export class Scribe {
       }
       errors.unshift(...this.stepErrors);
       return {
-        step: { applied, errors, note: text2.trim(), usage },
+        step: {
+          applied,
+          errors,
+          note: text2.trim(),
+          usage,
+          timing: { firstTokenMs, firstChangeMs, totalMs: performance.now() - t0, rounds: steps.length },
+        },
         messages: responseMessages,
       };
     } finally {

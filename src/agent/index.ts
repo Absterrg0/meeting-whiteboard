@@ -17,6 +17,10 @@ export interface AgentConfig {
   /** Editor model (diagram + overview); defaults to the scribe model. */
   editorModel: string;
   editorEffort: Effort;
+  /** Effort for the periodic consolidation pass and the end-of-meeting review. */
+  reviewEffort: Effort;
+  /** Scribe turns without upfront thinking (Sonnet 5.5 only); consolidation/review still think. */
+  fastThinking: boolean;
   maxSteps: number;
   checkpointTurns: number;
   checkpointTokens: number;
@@ -27,19 +31,28 @@ function effortFrom(v: string | undefined, fallback: Effort): Effort {
   return v === "low" || v === "medium" || v === "high" ? v : fallback;
 }
 
+/** A small, fast model of the same provider for the editor's structured diagram work. */
+function defaultEditorModel(model: string): string {
+  if (model.startsWith("anthropic/") || model.startsWith("claude")) return "anthropic/claude-haiku-5-5";
+  if (model.startsWith("openai/") || model.startsWith("gpt")) return "openai/gpt-6-luna";
+  return model;
+}
+
 export function configFromEnv(overrides: Partial<AgentConfig> = {}): AgentConfig {
   const model = overrides.model ?? process.env.MODEL ?? "anthropic/claude-sonnet-5-5";
   return {
     model,
     effort: effortFrom(process.env.EFFORT, "medium"),
-    editorModel: process.env.EDITOR_MODEL ?? model,
-    editorEffort: effortFrom(process.env.EDITOR_EFFORT, "medium"),
+    editorModel: process.env.EDITOR_MODEL ?? defaultEditorModel(model),
+    editorEffort: effortFrom(process.env.EDITOR_EFFORT, "low"),
+    reviewEffort: effortFrom(process.env.REVIEW_EFFORT, "low"),
+    fastThinking: process.env.FAST_THINKING === "1",
     maxSteps: 3,
     checkpointTurns: 40,
     checkpointTokens: 60_000,
     contextLines: 30,
     ...overrides,
-    ...(overrides.model && !overrides.editorModel && !process.env.EDITOR_MODEL ? { editorModel: overrides.model } : {}),
+    ...(overrides.model && !overrides.editorModel && !process.env.EDITOR_MODEL ? { editorModel: defaultEditorModel(overrides.model) } : {}),
   };
 }
 

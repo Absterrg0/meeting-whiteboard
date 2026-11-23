@@ -348,3 +348,15 @@ describe("topics", () => {
     expect(h.events.at(-1)!.kind).toBe("confirmed");
   });
 });
+
+describe("one-call shortcuts", () => {
+  it("creates a topic with its first item, and replaces an answer atomically", () => {
+    const h = new Harness()
+      .apply("record_item", decision("dec-redis", "accepted", "00:01:30", "we're going with Redis", { topic: "top-sessions", topic_title: "Session store", topic_question: "Where do sessions live?" }))
+      .apply("record_item", decision("dec-postgres", "accepted", "00:05:30", "Agreed, Postgres for sessions", { topic: "top-sessions", replaces: "dec-redis", reason: "one less system" }));
+    expect(h.state.topics["top-sessions"]).toMatchObject({ title: "Session store", question: "Where do sessions live?" });
+    expect(h.state.items["dec-redis"]).toMatchObject({ status: "superseded", supersededBy: "dec-postgres" });
+    expect(h.state.items["dec-postgres"]).toMatchObject({ status: "accepted", topic: "top-sessions" });
+    expect(h.events.at(-1)).toMatchObject({ kind: "replaced", targets: ["dec-redis", "dec-postgres"] });
+  });
+});

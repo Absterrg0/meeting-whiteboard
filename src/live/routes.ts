@@ -1,32 +1,20 @@
 /**
  * HTTP routes for live sources:
  *
- *   GET    /api/live/config          what is configured (OpenAI key, Recall key, public URL, models)
- *   POST   /api/bot                  {meeting_url, bot_name?, session_id?} -> a Recall bot joins the call
+ *   GET    /api/live/config          what is configured (OpenAI key, bot provider, public URL, models)
+ *   POST   /api/bot                  {meeting_url, bot_name?, session_id?, provider?} -> a bot joins the call
  *   GET    /api/bots                 bots of this server run
- *   GET    /api/bot/:id              bot status (from Recall) + local counters
+ *   GET    /api/bot/:id              bot status (from the provider) + local counters
  *   DELETE /api/bot/:id              the bot leaves the call
  *   POST   /api/recall/webhook/      Recall realtime events (token in the URL + optional signature)
+ *   POST   /api/attendee/webhook/    Attendee webhooks (token in the URL + optional signature)
+ *
+ * The bot provider (Recall.ai or self-hosted Attendee) is picked by BOT_PROVIDER; see bots.ts.
  */
 import type { Context, Hono } from "hono";
 import { transcribeConfig, type LiveSession } from "./audioRelay.js";
-import {
-  botStatus,
-  eventBotId,
-  mapParticipantEvent,
-  mapTranscriptEvent,
-  meetingPlatform,
-  meetingTimeFor,
-  newToken,
-  RecallClient,
-  recallConfig,
-  RecallError,
-  tokensEqual,
-  verifyRecallSignature,
-  WEBHOOK_PATH,
-  type BotRecord,
-  type RecallBot,
-} from "./recall.js";
+import { BOT_PROVIDERS, BotProviderError, botProviders, selectedProviderId, type BotProvider, type BotProviderId, type BotStatus } from "./bots.js";
+import { meetingPlatform, meetingTimeFor, newToken, recallConfig, tokensEqual, type BotRecord, type MappedUtterance } from "./recall.js";
 import { cloudflaredInstalled, currentPublicUrl, ensurePublicUrl } from "./tunnel.js";
 
 export type { LiveSession };
@@ -41,19 +29,24 @@ export interface LiveRouteDeps {
   env?: NodeJS.ProcessEnv;
 }
 
+/** A bot of any provider. `offset` aligns the provider's clock to the session clock. */
+export type LiveBotRecord = BotRecord & { provider: BotProviderId; seen: Set<string> };
+
 const MAX_WEBHOOK_BYTES = 1_000_000;
 const STATUS_CACHE_MS = 2000;
+const MAX_SEEN_KEYS = 5000;
 
 export function registerLiveRoutes(app: Hono, deps: LiveRouteDeps) {
   const env = deps.env ?? process.env;
-  const bots = new Map<string, BotRecord>();
-  const statusCache = new Map<string, { at: number; bot: RecallBot | null; error: string | null }>();
-  const client = () => new RecallClient(recallConfig(env), deps.fetchImpl ?? fetch);
+  const bots = new Map<string, LiveBotRecord>();
+  const statusCache = new Map<string, { at: number; status: BotStatus | null; error: string | null }>();
+  const providers = () => botProviders(env, deps.fetchImpl ?? fetch);
   const publicUrl = deps.publicUrl ?? (() => ensurePublicUrl(deps.port));
   let cloudflared: boolean | null = null;
 
-  const view = (rec: BotRecord, remote?: { bot: RecallBot | null; error: string | null }) => ({
+  const view = (rec: LiveBotRecord, remote?: { status: BotStatus | null; error: string | null }) => ({
     id: rec.id,
+    provider: rec.provider,
     sessionId: rec.sessionId,
     meetingUrl: rec.meetingUrl,
     botName: rec.botName,
@@ -62,26 +55,28 @@ export function registerLiveRoutes(app: Hono, deps: LiveRouteDeps) {
     participants: rec.participants,
     lastEventAt: rec.lastEventAt,
     left: rec.left,
-    status: remote?.bot ? botStatus(remote.bot) : null,
+    status: remote?.status ?? null,
     error: remote?.error ?? null,
   });
 
-  async function remoteStatus(id: string) {
-    const cached = statusCache.get(id);
+  async function remoteStatus(rec: LiveBotRecord) {
+    const cached = statusCache.get(rec.id);
     if (cached && Date.now() - cached.at < STATUS_CACHE_MS) return cached;
-    let entry: { at: number; bot: RecallBot | null; error: string | null };
+    let entry: { at: number; status: BotStatus | null; error: string | null };
     try {
-      entry = { at: Date.now(), bot: await client().getBot(id), error: null };
+      entry = { at: Date.now(), status: await providers()[rec.provider].status(rec.id), error: null };
     } catch (e) {
-      entry = { at: Date.now(), bot: cached?.bot ?? null, error: (e as Error).message };
+      entry = { at: Date.now(), status: cached?.status ?? null, error: (e as Error).message };
     }
-    statusCache.set(id, entry);
+    statusCache.set(rec.id, entry);
     return entry;
   }
 
   app.get("/api/live/config", (c) => {
     cloudflared ??= cloudflaredInstalled();
     const rc = recallConfig(env);
+    const all = providers();
+    const selected = all[selectedProviderId(env)];
     return c.json({
       openai: !!env.OPENAI_API_KEY,
       transcribeModel: transcribeConfig().model,
@@ -90,23 +85,33 @@ export function registerLiveRoutes(app: Hono, deps: LiveRouteDeps) {
       recallSignature: !!rc.webhookSecret,
       publicUrl: currentPublicUrl(),
       cloudflared,
+      // Provider-neutral fields (the UI falls back to `recall` when these are absent).
+      botProvider: selected.id,
+      botProviderLabel: selected.label,
+      botReady: selected.configured,
+      botSetupHint: selected.configured ? null : selected.setupHint,
+      botProviders: BOT_PROVIDERS.map((id) => ({ id, label: all[id].label, configured: all[id].configured, ...all[id].info })),
     });
   });
 
   app.post("/api/bot", async (c) => {
-    const body = (await c.req.json().catch(() => ({}))) as { meeting_url?: unknown; bot_name?: unknown; session_id?: unknown };
+    const body = (await c.req.json().catch(() => ({}))) as { meeting_url?: unknown; bot_name?: unknown; session_id?: unknown; provider?: unknown };
     const meetingUrl = String(body.meeting_url ?? "").trim();
     if (!meetingPlatform(meetingUrl)) {
       return c.json({ error: "meeting_url must be an https Google Meet, Zoom, Teams or Webex link" }, 400);
     }
-    if (!recallConfig(env).apiKey) {
-      return c.json({ error: "Set RECALL_API_KEY (and RECALL_REGION) in .env and restart the server to use a meeting bot." }, 400);
-    }
+    const all = providers();
+    const providerId =
+      typeof body.provider === "string" && (BOT_PROVIDERS as readonly string[]).includes(body.provider)
+        ? (body.provider as BotProviderId)
+        : selectedProviderId(env);
+    const provider: BotProvider = all[providerId];
+    if (!provider.configured) return c.json({ error: provider.setupHint }, 400);
     const botName = String(body.bot_name ?? "").trim().slice(0, 100) || "Meeting Whiteboard";
 
     let base: string;
     try {
-      base = await publicUrl();
+      base = provider.webhookBaseUrl ?? (await publicUrl());
     } catch (e) {
       return c.json({ error: (e as Error).message }, 400);
     }
@@ -117,11 +122,12 @@ export function registerLiveRoutes(app: Hono, deps: LiveRouteDeps) {
     session ??= deps.createLiveSession(`Meeting (${meetingPlatform(meetingUrl)!.replace("_", " ")})`);
 
     const token = newToken();
-    const webhookUrl = `${base}${WEBHOOK_PATH}?token=${encodeURIComponent(token)}`;
+    const webhookUrl = `${base}${provider.webhookPath}?token=${encodeURIComponent(token)}`;
     try {
-      const bot = await client().createBot({ meetingUrl, botName, webhookUrl });
-      const rec: BotRecord = {
+      const bot = await provider.createBot({ meetingUrl, botName, webhookUrl });
+      const rec: LiveBotRecord = {
         id: bot.id,
+        provider: provider.id,
         sessionId: session.id,
         token,
         meetingUrl,
@@ -132,12 +138,13 @@ export function registerLiveRoutes(app: Hono, deps: LiveRouteDeps) {
         offset: null,
         lastEventAt: null,
         left: false,
+        seen: new Set(),
       };
       bots.set(bot.id, rec);
-      console.log(`recall bot ${bot.id} -> ${meetingUrl} (session ${session.id}, webhook ${base}${WEBHOOK_PATH})`);
-      return c.json({ bot: view(rec, { bot, error: null }), sessionId: session.id });
+      console.log(`${provider.id} bot ${bot.id} -> ${meetingUrl} (session ${session.id}, webhook ${base}${provider.webhookPath})`);
+      return c.json({ bot: view(rec, { status: bot.status, error: null }), sessionId: session.id });
     } catch (e) {
-      const status = e instanceof RecallError && e.status >= 400 && e.status < 500 ? 400 : 502;
+      const status = e instanceof BotProviderError && e.status >= 400 && e.status < 500 ? 400 : 502;
       return c.json({ error: (e as Error).message }, status);
     }
   });
@@ -147,67 +154,71 @@ export function registerLiveRoutes(app: Hono, deps: LiveRouteDeps) {
   app.get("/api/bot/:id", async (c) => {
     const rec = bots.get(c.req.param("id"));
     if (!rec) return c.json({ error: "no such bot" }, 404);
-    return c.json(view(rec, await remoteStatus(rec.id)));
+    return c.json(view(rec, await remoteStatus(rec)));
   });
 
   app.delete("/api/bot/:id", async (c) => {
     const rec = bots.get(c.req.param("id"));
     if (!rec) return c.json({ error: "no such bot" }, 404);
     try {
-      const bot = await client().leaveCall(rec.id);
+      const status = await providers()[rec.provider].leave(rec.id);
       rec.left = true;
       statusCache.delete(rec.id);
-      return c.json(view(rec, { bot, error: null }));
+      return c.json(view(rec, { status, error: null }));
     } catch (e) {
       return c.json({ error: (e as Error).message }, 502);
     }
   });
 
-  const webhook = async (c: Context) => {
+  const webhook = (providerId: BotProviderId) => async (c: Context) => {
+    const provider = providers()[providerId];
     const raw = await c.req.text();
     if (raw.length > MAX_WEBHOOK_BYTES) return c.json({ error: "too large" }, 413);
-    const secret = recallConfig(env).webhookSecret;
-    if (secret) {
-      try {
-        verifyRecallSignature(
-          secret,
-          {
-            id: c.req.header("webhook-id") ?? c.req.header("svix-id"),
-            timestamp: c.req.header("webhook-timestamp") ?? c.req.header("svix-timestamp"),
-            signature: c.req.header("webhook-signature") ?? c.req.header("svix-signature"),
-          },
-          raw,
-        );
-      } catch (e) {
-        return c.json({ error: `signature check failed: ${(e as Error).message}` }, 401);
-      }
-    }
     let body: unknown;
+    let parsed = true;
     try {
       body = JSON.parse(raw);
     } catch {
-      return c.json({ error: "invalid JSON" }, 400);
+      parsed = false;
     }
-    const rec = bots.get(eventBotId(body) ?? "");
+    try {
+      provider.verifyWebhook((n) => c.req.header(n), raw, body);
+    } catch (e) {
+      return c.json({ error: `signature check failed: ${(e as Error).message}` }, 401);
+    }
+    if (!parsed) return c.json({ error: "invalid JSON" }, 400);
+    const rec = bots.get(provider.botIdOf(body) ?? "");
     const token = c.req.query("token") ?? "";
-    if (!rec || !token || !tokensEqual(token, rec.token)) return c.json({ error: "unknown bot or bad token" }, 401);
+    if (!rec || rec.provider !== providerId || !token || !tokensEqual(token, rec.token)) return c.json({ error: "unknown bot or bad token" }, 401);
 
     rec.lastEventAt = new Date().toISOString();
     const session = deps.getSession(rec.sessionId);
-    const u = mapTranscriptEvent(body);
-    if (u && session) {
-      const t = meetingTimeFor(rec, u, session.meetingTime(), session.transcript.at(-1)?.t ?? 0);
-      session.addUtterance({ speaker: u.speaker, text: u.text, t });
-      rec.utterances++;
-      if (!rec.participants.includes(u.speaker)) rec.participants.push(u.speaker);
+    for (const ev of provider.mapEvent(body)) {
+      if (ev.kind === "utterance" && session) {
+        if (ev.key) {
+          if (rec.seen.has(ev.key)) continue; // retried delivery or a revised caption we already have
+          if (rec.seen.size >= MAX_SEEN_KEYS) rec.seen.clear();
+          rec.seen.add(ev.key);
+        }
+        const u = { start: ev.start, end: ev.end } as MappedUtterance;
+        const t = meetingTimeFor(rec, u, session.meetingTime(), session.transcript.at(-1)?.t ?? 0);
+        session.addUtterance({ speaker: ev.speaker, text: ev.text, t });
+        rec.utterances++;
+        if (!rec.participants.includes(ev.speaker)) rec.participants.push(ev.speaker);
+      } else if (ev.kind === "participant") {
+        if (ev.action === "join" && !rec.participants.includes(ev.name)) rec.participants.push(ev.name);
+      } else if (ev.kind === "status") {
+        statusCache.set(rec.id, { at: Date.now(), status: ev.status, error: null });
+      }
     }
-    const p = mapParticipantEvent(body);
-    if (p?.kind === "join" && !rec.participants.includes(p.name)) rec.participants.push(p.name);
-    // Always 2xx for an authenticated event, even if the session is gone, so Recall does not retry.
+    // Always 2xx for an authenticated event, even if the session is gone, so the provider does not retry.
     return c.json({ ok: true });
   };
-  app.post(WEBHOOK_PATH, webhook);
-  app.post(WEBHOOK_PATH.replace(/\/$/, ""), webhook);
+  for (const id of BOT_PROVIDERS) {
+    const path = providers()[id].webhookPath;
+    app.post(path, webhook(id));
+    app.post(path.replace(/\/$/, ""), webhook(id));
+  }
 
   return { bots };
 }

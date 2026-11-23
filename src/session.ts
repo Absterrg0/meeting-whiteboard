@@ -38,10 +38,12 @@ export interface SchedulePolicy {
 
 export const DEFAULT_SCHEDULE: SchedulePolicy = {
   debounceMs: 600,
-  editorDebounceMs: 4000,
-  editorMaxWaitMs: 15000,
-  consolidateEverySec: 300,
+  editorDebounceMs: 5000,
+  editorMaxWaitMs: 20000,
+  consolidateEverySec: 600,
 };
+
+export type Role = "scribe" | "editor" | "consolidation" | "review";
 
 /** Item changes that can affect the diagram or overview (action items and facts cannot). */
 function affectsArchitecture(e: ChangeEvent, state: DocState): boolean {
@@ -71,6 +73,10 @@ export interface Metrics {
   editorSeconds: number[];
   /** Lines per scribe turn. */
   turnLines: number[];
+  /** Per scribe turn: ms to first token, ms to first applied change, rounds. */
+  turnTiming: { firstTokenMs: number | null; firstChangeMs: number | null; totalMs: number; rounds: number; outTokens: number; inUncached: number; inCached: number }[];
+  /** Per line: meeting seconds it waited for a busy scribe before its turn started. */
+  queueWait: number[];
 }
 
 export interface Snapshot {
@@ -124,6 +130,9 @@ export class MeetingSession extends EventEmitter {
   state: DocState = emptyState();
   events: ChangeEvent[] = [];
   usage: Usage = emptyUsage();
+  /** The same spend split by what it was for, to see where cost goes. */
+  usageByRole: Record<Role, Usage> = { scribe: emptyUsage(), editor: emptyUsage(), consolidation: emptyUsage(), review: emptyUsage() };
+  private lastConsolidateSeq = 0;
   log: SessionLogEntry[] = [];
   status: SessionStatus = "idle";
   mode: "live" | "replay" | "headless" = "headless";
@@ -131,7 +140,7 @@ export class MeetingSession extends EventEmitter {
   editorBusy = false;
   consolidating = false;
   private lastConsolidateAt = 0;
-  metrics: Metrics = { lineLatency: [], diagramLag: [], turnSeconds: [], editorSeconds: [], turnLines: [] };
+  metrics: Metrics = { lineLatency: [], diagramLag: [], turnSeconds: [], editorSeconds: [], turnLines: [], turnTiming: [], queueWait: [] };
   reviewOnFinish: boolean;
 
   readonly agent: AgentRuntime;
@@ -414,11 +423,19 @@ export class MeetingSession extends EventEmitter {
           if (mode === "review") this.notices.push(`[review] ${e.summary}`);
         }),
       });
-      this.usage = mergeUsage(this.usage, result.usage);
+      this.charge(mode === "review" ? "review" : "scribe", result.usage);
       if (mode === "batch") {
         this.processed = upTo;
         this.metrics.turnSeconds.push((performance.now() - started) / 1000);
         this.metrics.turnLines.push(fresh.length);
+        if (result.timing) {
+          this.metrics.turnTiming.push({
+            ...result.timing,
+            outTokens: result.usage.outputTokens,
+            inUncached: result.usage.inputTokens + result.usage.cacheWriteTokens,
+            inCached: result.usage.cacheReadTokens,
+          });
+        }
         if (!this.manual) for (const u of fresh) this.metrics.lineLatency.push(Math.max(0, this.meetingTime() - u.t));
       }
       this.addLog("batch", `${label}: ${result.applied} change(s). ${result.note}`.trim());
@@ -463,7 +480,11 @@ export class MeetingSession extends EventEmitter {
     const every = this.policy.consolidateEverySec;
     const now = this.transcript.at(-1)?.t ?? 0;
     if (!every || this.consolidating || this.disposed || now - this.lastConsolidateAt < every) return Promise.resolve();
+    // Nothing new since the last pass: nothing to consolidate.
+    const changed = this.events.slice(this.lastConsolidateSeq).filter((e) => e.source === "agent").length;
+    if (changed < 3) return Promise.resolve();
     this.lastConsolidateAt = now;
+    this.lastConsolidateSeq = this.events.length;
     return this.runConsolidation(Math.max(every * 1.6, 300));
   }
 
@@ -485,7 +506,7 @@ export class MeetingSession extends EventEmitter {
           if (affectsArchitecture(e, this.state)) itemsChanged = true;
         }),
       });
-      this.usage = mergeUsage(this.usage, result.usage);
+      this.charge("consolidation", result.usage);
       this.addLog("batch", `Consolidation (${formatTs(meetingTime)}): ${result.applied} change(s). ${result.note}`.trim());
       for (const e of result.errors) this.addLog("error", `consolidation: ${e}`);
       if (itemsChanged) this.markEditorDirty(meetingTime);
@@ -518,7 +539,7 @@ export class MeetingSession extends EventEmitter {
         signal: this.abort.signal,
         apply: this.applier("editor", this.transcript, this.meetingTime()),
       });
-      this.usage = mergeUsage(this.usage, result.usage);
+      this.charge("editor", result.usage);
       this.metrics.editorSeconds.push((performance.now() - started) / 1000);
       if (since !== null && !this.manual) this.metrics.diagramLag.push(Math.max(0, this.meetingTime() - since));
       this.addLog("editor", `${result.applied} diagram/overview change(s). ${result.note}`.trim());
@@ -605,6 +626,11 @@ export class MeetingSession extends EventEmitter {
     };
   }
 
+  private charge(role: Role, u: Usage) {
+    this.usage = mergeUsage(this.usage, u);
+    this.usageByRole[role] = mergeUsage(this.usageByRole[role], u);
+  }
+
   private addLog(kind: SessionLogEntry["kind"], message: string) {
     this.log.push({ at: new Date().toISOString(), ts: formatTs(this.meetingTime()), kind, message });
   }
@@ -649,6 +675,7 @@ export async function runHeadless(
       s.addUtterance({ speaker: u.speaker, text: u.text, t: u.t });
     }
     s.setClock(clock);
+    for (const u of s.transcript.slice(s.transcript.length - s.pendingCount())) s.metrics.queueWait.push(Math.max(0, clock - u.t));
     const t0 = performance.now();
     const lines = await s.runTurn();
     clock += (performance.now() - t0) / 1000;

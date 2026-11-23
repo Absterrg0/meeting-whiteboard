@@ -263,8 +263,25 @@ const recordItem: Handler<RecordItem> = (state, input, ctx) => {
   checkStatus(input.kind, input.status);
   checkRelated(state, input.related);
   if (input.status === "superseded") fail("record the replacement and use supersede_item instead");
-  checkTopic(state, input.topic);
   const ev = evidenceFor(ctx, input.ts, input.quote);
+  // A new topic can be created by its first item (saves a round-trip on the hot path).
+  let createdTopic = false;
+  if (input.topic && !state.topics[input.topic] && /^top-/.test(input.topic)) {
+    // Title from topic_title, or from the slug itself ("top-delivery-queue" -> "Delivery queue").
+    const fromSlug = input.topic.replace(/^top-/, "").replace(/-/g, " ");
+    const title = input.topic_title ?? fromSlug.charAt(0).toUpperCase() + fromSlug.slice(1);
+    state.topics[input.topic] = {
+      id: input.topic,
+      title,
+      question: input.topic_question ?? input.title,
+      createdAt: ev.ts,
+      updatedAt: ev.ts,
+      evidence: [ev],
+    };
+    state.order.topics.push(input.topic);
+    createdTopic = true;
+  }
+  checkTopic(state, input.topic);
   const item: Item = {
     id: input.id,
     kind: input.kind,
@@ -300,9 +317,32 @@ const recordItem: Handler<RecordItem> = (state, input, ctx) => {
       source: ctx.source,
     });
   }
+  // A reversal in one call: record as proposed, then supersede the old answer with it.
+  const finalStatus = item.status;
+  if (input.replaces) {
+    if (item.kind !== "decision") fail("replaces is only for decisions");
+    item.status = "proposed";
+  }
   checkOneLiveDecision(state, item);
   state.items[item.id] = item;
   state.order.items.push(item.id);
+  if (input.replaces) {
+    const old = getItem(state, input.replaces);
+    if (!item.topic && old.topic) item.topic = old.topic;
+    const r = supersedeItem(
+      state,
+      {
+        old_id: input.replaces,
+        new_id: item.id,
+        new_status: finalStatus === "tentative" ? "tentative" : "accepted",
+        reason: input.reason ?? "replaced by a later decision",
+        ts: input.ts,
+        quote: input.quote,
+      },
+      ctx,
+    );
+    return { ts: r.ts, targets: [input.replaces, item.id], summary: r.summary, kind: "replaced" };
+  }
   const owner = item.owner ? ` (owner: ${item.owner}${item.due ? `, due ${item.due}` : ""})` : "";
   return {
     ts: ev.ts,
@@ -310,7 +350,7 @@ const recordItem: Handler<RecordItem> = (state, input, ctx) => {
     summary: `Added ${item.kind.replace("_", " ")} "${item.title}" as ${item.status}${owner}.${
       input.revised_from ? ` Revised during the discussion from: "${input.revised_from}".` : ""
     }`,
-    kind: input.revised_from ? "revised" : item.kind === "decision" && ["accepted", "tentative"].includes(item.status) ? "decided" : itemKind(item, false, false),
+    kind: createdTopic ? (item.kind === "decision" && ["accepted", "tentative"].includes(item.status) ? "decided" : itemKind(item, false, false)) : input.revised_from ? "revised" : item.kind === "decision" && ["accepted", "tentative"].includes(item.status) ? "decided" : itemKind(item, false, false),
   };
 };
 
