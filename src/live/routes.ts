@@ -77,7 +77,9 @@ export function registerLiveRoutes(app: Hono, deps: LiveRouteDeps) {
    * once; if that one sticks too, the bot is marked failed with a reason the UI shows,
    * together with the fallback (capture the meeting tab's audio). A bot never just hangs.
    */
-  const JOIN_TIMEOUT_MS = Number(env.BOT_JOIN_TIMEOUT_MS ?? 75_000);
+  // Long enough for a host to admit the bot from the waiting room (some providers report
+  // the waiting room as "joining").
+  const JOIN_TIMEOUT_MS = Number(env.BOT_JOIN_TIMEOUT_MS ?? 300_000);
   const STUCK = new Set(["joining", "ready", "staged", "scheduled", "created", "joining_call"]);
   const FATAL = /fatal|denied|could_not|cannot|can_t|rejected|kicked|failed/;
   function watchJoin(rec: LiveBotRecord, webhookUrl: string) {
