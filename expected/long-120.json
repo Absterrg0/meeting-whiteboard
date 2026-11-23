@@ -142,7 +142,7 @@
       "id": "diag-api",
       "type": "diagram_includes",
       "desc": "Go API shown",
-      "pattern": "tile api"
+      "pattern": "tile api|serving api|go api|\\bapi\\b"
     },
     {
       "id": "doc8",
