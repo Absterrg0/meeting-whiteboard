@@ -34,7 +34,8 @@ export interface DeciderConfig {
 }
 
 export function deciderFromEnv(): DeciderConfig | null {
-  const model = process.env.DECISION_MODEL;
+  // On by default when a TypeSafe key is present (Jev); DECISION_MODEL picks another model or "off".
+  const model = process.env.DECISION_MODEL ?? (process.env.TYPESAFE_AI_API_KEY ? "typesafe-ai/jev-latest" : undefined);
   if (!model || model === "off") return null;
   return {
     model,

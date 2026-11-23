@@ -344,10 +344,29 @@ const recordItem: Handler<RecordItem> = (state, input, ctx) => {
     createdTopic = true;
   }
   checkTopic(state, input.topic);
+  // Decisions and questions belong to a topic. If the scribe didn't file one, derive it from
+  // the title's subject ("Job queue: SQS" -> topic "Job queue"), reusing a topic with that
+  // title. Deterministic, so the same subject always lands in the same section.
+  let topic = input.topic ?? null;
+  if (!topic && (input.kind === "decision" || input.kind === "open_question") && ctx.source !== "human") {
+    const subject = input.title.split(":")[0]!.trim();
+    if (input.title.includes(":") && subject.length >= 3 && subject.length <= 40) {
+      const existing = Object.values(state.topics).find((t) => t.title.toLowerCase() === subject.toLowerCase());
+      if (existing) topic = existing.id;
+      else {
+        const id = `top-${subject.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 50)}`;
+        if (/^top-[a-z0-9][a-z0-9-]{1,}$/.test(id) && !state.topics[id]) {
+          state.topics[id] = { id, title: subject, question: "", createdAt: ev.ts, updatedAt: ev.ts, evidence: [ev] };
+          state.order.topics.push(id);
+        }
+        if (state.topics[id]) topic = id;
+      }
+    }
+  }
   const item: Item = {
     id: input.id,
     kind: input.kind,
-    topic: input.topic ?? null,
+    topic,
     confidence: input.confidence ?? "high",
     title: input.title,
     detail: input.detail,

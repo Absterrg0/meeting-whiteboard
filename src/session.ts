@@ -250,6 +250,20 @@ export class MeetingSession extends EventEmitter {
     return utt;
   }
 
+  /**
+   * Rename a speaker in the transcript ("Speaker 1" -> "Lena", from live diarization). Past lines are
+   * rewritten; doc items keep their text. Returns the number of lines changed.
+   */
+  renameSpeaker(from: string, to: string): number {
+    let n = 0;
+    this.transcript = this.transcript.map((u) => (u.speaker === from ? (n++, { ...u, speaker: to }) : u));
+    if (n > 0) {
+      this.emit("reset"); // live clients resend the full transcript
+      this.changed();
+    }
+    return n;
+  }
+
   pendingCount(): number {
     return this.transcript.length - this.processed;
   }
