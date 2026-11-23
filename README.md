@@ -175,13 +175,13 @@ The checks that still fail are mostly subtle. An action item someone declined is
 
 - One meeting per session; the doc starts empty.
 - Agreement is judged from what people say, not from roles.
-- With live audio, speakers are set with the "Speaking now" chips, because realtime transcription has no diarization. The meeting bot gets real names from the platform.
+- **Speakers on live audio.** Realtime transcription has no diarization, so each finished turn's audio is also sent to `gpt-4o-transcribe-diarize`. That call carries the reference clips of voices heard so far, so labels stay consistent across the meeting: Speaker 1, Speaker 2, and so on. Renaming "Speaker 1 → Lena" rewrites the past lines too. This adds about 4.6 s per live line. On a synthetic three-voice test, labels were fully correct in 2 of 4 runs; the failure was two similar voices merged. The "Speaking now" chips override it, and `DIARIZE=0` turns it off. The meeting bot gets real names from the platform instead.
 - **Meeting bot: buy before build.** Two providers sit behind one interface (`BOT_PROVIDER`). **Recall.ai** is hosted (about $0.65/hour), with zero ops and every platform. **Attendee** is self-hosted with Docker, gets transcripts free from meeting captions, and has real speaker names. Its licence is the Elastic License 2.0, not OSI open source: fine to self-host for our own use, not to resell. Vexa is Apache-2.0 but has no real-time push yet. Writing our own browser bot (Google sign-in, admission, caption scraping, Zoom's SDK review) is days of brittle work, so it wasn't the right use of the time. Neither provider has been tested against a real call; both are tested against simulators that follow their documented and source-verified payloads.
 - **Local, single user.** The server binds to 127.0.0.1 and has no auth. Sessions persist to `out/<id>/` (state, event log, transcript) and can be reopened from the start screen.
 
 ## What I would do next
 
-- **Speaker detection for raw audio**: chunked diarization with `gpt-4o-transcribe-diarize`, with short reference clips per participant so the labels stay consistent across chunks.
+- **Better speaker separation**: grow each voice's reference from later confident turns, and confirm a match against only that voice's reference before accepting it. Or move diarization off the per-line path: show the line at once and correct the label when it returns.
 - **A fast decision layer** (e.g. TypeSafe AI's Jev, a "System 1" model that picks among given options in about 0.2 s at a fraction of LLM cost):
   - Use it for the routing calls: "does this line change the doc: none / proposal / agreement / rejection / reversal / revision / question / action?" and "which existing topic?".
   - With high confidence, chatter skips the scribe entirely, which is a big saving on long meetings, and a pure status flip ("works for me" → accept the open proposal) is applied without an LLM.
