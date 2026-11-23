@@ -45,6 +45,8 @@ export interface Snapshot {
   status: SessionStatus;
   agentBusy: boolean;
   meetingTime: string;
+  mode: "live" | "replay" | "headless";
+  speed: number;
   transcript: Utterance[];
   processedCount: number;
   state: DocState;
@@ -130,14 +132,19 @@ export class MeetingSession extends EventEmitter {
     const utt: Utterance = { t, ts: formatTs(t), speaker: u.speaker, text: u.text, idx: this.transcript.length };
     this.transcript.push(utt);
     if (CUES.test(utt.text) && this.policy.cueFlush) this.forceFlush = true;
+    // With the clock stopped (paused, or meeting over) nothing else would trigger a flush.
+    if (this.status === "paused" || this.status === "done") this.forceFlush = true;
     this.emit("utterance", utt);
     this.changed();
     this.schedule();
     return utt;
   }
 
+  mode: "live" | "replay" | "headless" = "headless";
+
   /** Start a live session (no replay): the clock runs in real time from 0. */
   startLive() {
+    this.mode = "live";
     this.speed = 1;
     this.startClock();
     this.changed();
@@ -147,6 +154,7 @@ export class MeetingSession extends EventEmitter {
   replay(utterances: Utterance[], speed = 1) {
     this.stopTimers();
     this.replayQueue = [...utterances];
+    this.mode = "replay";
     this.speed = speed;
     this.startClock();
     this.scheduleReplay();
@@ -189,25 +197,35 @@ export class MeetingSession extends EventEmitter {
     if (wasRunning) this.resume();
   }
 
-  /** End of meeting: flush everything that is left, then run the review pass. */
+  /**
+   * End of meeting: stop any replay, freeze the clock, process what is left, then run
+   * the review pass. Lines injected afterwards are still processed (immediately).
+   */
   finish(): Promise<void> {
     if (this.finishing) return this.finished;
     this.finishing = true;
     let resolveFinished!: () => void;
     this.finished = new Promise((r) => (resolveFinished = r));
-    this.forceFlush = true;
-    this.schedule();
+    this.clockBase = Math.max(this.meetingTime(), this.transcript.at(-1)?.t ?? 0);
+    this.status = "done";
+    this.stopTimers();
+    this.replayQueue = [];
+    if (this.ticker) clearInterval(this.ticker);
+    this.ticker = null;
+    this.flush();
     void this.drained().then(async () => {
       if (this.reviewOnFinish && this.transcript.length > 0) await this.runReview();
-      this.clockBase = this.meetingTime();
-      this.status = "done";
-      this.stopTimers();
-      if (this.ticker) clearInterval(this.ticker);
-      this.ticker = null;
       this.changed();
       resolveFinished();
     });
     return this.finished;
+  }
+
+  /** Process whatever is pending now, regardless of the batch policy. */
+  flush() {
+    this.forceFlush = true;
+    this.changed();
+    this.schedule();
   }
 
   private stopTimers() {
@@ -368,6 +386,8 @@ export class MeetingSession extends EventEmitter {
       status: this.status,
       agentBusy: this.agentBusy,
       meetingTime: formatTs(this.meetingTime()),
+      mode: this.mode,
+      speed: this.speed,
       transcript: this.transcript,
       processedCount: this.processed,
       state: this.state,

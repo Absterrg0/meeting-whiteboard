@@ -57,12 +57,20 @@ export function App() {
   const [sessionId, setSessionId] = useState<string | null>(null);
   const [tab, setTab] = useState<Tab>("diagram");
   const [showDraft, setShowDraft] = useState(true);
+  const [expanded, setExpanded] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [focusTs, setFocusTs] = useState<{ ts: string; n: number } | null>(null);
   const [starting, setStarting] = useState(false);
   const fileInput = useRef<HTMLInputElement>(null);
 
   const { snap, receivedAt, connected } = useSession(sessionId);
+
+  useEffect(() => {
+    if (!expanded) return;
+    const onKey = (e: KeyboardEvent) => e.key === "Escape" && setExpanded(false);
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [expanded]);
   const clock = useClock(snap, receivedAt, sessionSpeed);
 
   useEffect(() => {
@@ -328,10 +336,15 @@ export function App() {
             {!snap && <div className="empty">No meeting yet.</div>}
             {snap && tab === "diagram" && (
               <div className="diagram-tab">
-                <label className="toggle">
-                  <input type="checkbox" checked={showDraft} onChange={(e) => setShowDraft(e.target.checked)} />
-                  Show proposals (dashed)
-                </label>
+                <div className="diagram-bar">
+                  <label className="toggle">
+                    <input type="checkbox" checked={showDraft} onChange={(e) => setShowDraft(e.target.checked)} />
+                    Show proposals (dashed)
+                  </label>
+                  <button className="btn small" onClick={() => setExpanded(true)} disabled={!snap.mermaidDraft}>
+                    Expand
+                  </button>
+                </div>
                 <MermaidView
                   key={sessionId}
                   code={showDraft ? snap.mermaidDraft : snap.mermaid}
@@ -356,6 +369,24 @@ export function App() {
           </div>
         </section>
       </main>
+
+      {expanded && snap && (
+        <div className="overlay" role="dialog" aria-label="Architecture diagram" onClick={() => setExpanded(false)}>
+          <div className="overlay-card" onClick={(e) => e.stopPropagation()}>
+            <div className="overlay-head">
+              <h2>Architecture{showDraft ? " (with proposals)" : ""}</h2>
+              <label className="toggle">
+                <input type="checkbox" checked={showDraft} onChange={(e) => setShowDraft(e.target.checked)} />
+                Show proposals
+              </label>
+              <button className="btn small" onClick={() => setExpanded(false)} autoFocus>
+                Close
+              </button>
+            </div>
+            <MermaidView code={showDraft ? snap.mermaidDraft : snap.mermaid} className="overlay-diagram" flashOnChange maxScale={1.6} />
+          </div>
+        </div>
+      )}
     </div>
   );
 }

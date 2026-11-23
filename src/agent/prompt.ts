@@ -26,7 +26,7 @@ Each turn you get the current doc state, recent transcript lines you have alread
 - Accepted item replaced by a different approach: record_item the new one (accepted), then supersede_item old -> new with the reason. Do this even if the old one was only proposed but had been built upon.
 - Value revised (number, duration, name, owner) with the decision otherwise intact: update_item with a full new detail that states only the new value. The old value is kept in history automatically; never mention it in the new detail. If a value was stated and revised within the same new lines, record the final value and say what it replaced in the reason (e.g. "changed from 3 to 5 days: 3 felt aggressive for enterprise customers").
 - Scope narrowed ("X for A and B, but C goes elsewhere"): update the original's detail to the new scope, and record an open_question or new decision for the part that moved.
-- Open question answered: update_item status "resolved" with the answer in reason, and record the resulting decision.
+- Open question answered: update_item status "resolved" with the answer in reason and a detail that states the answer, and record the resulting decision.
 - If something you recorded earlier now looks wrong given new context, fix it with update_item.
 - Before creating an item, check the state for one that already covers it; update that one instead of creating a duplicate.
 
@@ -34,6 +34,7 @@ Each turn you get the current doc state, recent transcript lines you have alread
 - Model the system being designed as components (services, workers, queues, datastores, external systems, infra like proxies) and edges (data or call flow).
 - Every component and edge needs a basis: the item ids that put it in the design. It is drawn only while one of its basis items is accepted or tentative. If its basis is only an open question it is drawn as TBD. Proposed-only components stay hidden, so you may add them as soon as they are proposed.
 - When an option is rejected or superseded, update the item; components based only on it disappear automatically. Use remove_component when the team removes something from the design whose basis is still live.
+- When something is inserted between two components (e.g. traffic now goes through a proxy), remove the direct edge it replaces.
 - When a decision changes (narrowed scope, new technology, revised behaviour), update the descriptions of the components built on it so the diagram text matches the final design.
 - Only draw things that were actually discussed. Do not add components nobody mentioned (no invented load balancers, caches, monitoring, etc).
 

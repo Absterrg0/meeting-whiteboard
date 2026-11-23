@@ -170,7 +170,7 @@ const updateItem: Handler<UpdateItem> = (state, input, ctx) => {
   if (input.status === "superseded") fail("use supersede_item to supersede an item");
   if (input.status) checkStatus(item.kind, input.status);
   checkRelated(state, input.related);
-  if (item.status === "superseded" && input.status === undefined) {
+  if (ctx.source === "agent" && item.status === "superseded" && input.status === undefined) {
     fail(`item '${item.id}' is superseded by '${item.supersededBy}'; update that item instead`);
   }
 
@@ -194,7 +194,11 @@ const updateItem: Handler<UpdateItem> = (state, input, ctx) => {
   if (input.related) item.related = [...new Set([...item.related, ...input.related])];
   if (changes.length === 0 && !input.related) fail(`update_item on '${item.id}' changes nothing`);
 
-  if (input.status && ["rejected", "dropped", "accepted", "tentative", "resolved", "done"].includes(input.status)) {
+  // The item's reason is the team's rationale. A UI edit is recorded in history with its
+  // own reason but does not replace the rationale unless there was none.
+  if (ctx.source === "human") {
+    if (!item.reason && input.reason !== "edited in UI") item.reason = input.reason;
+  } else if (input.status && ["rejected", "dropped", "accepted", "tentative", "resolved", "done"].includes(input.status)) {
     item.reason = input.reason;
   } else if (!item.reason) {
     item.reason = input.reason;

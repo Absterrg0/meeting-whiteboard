@@ -43,20 +43,8 @@ function listTranscripts(): { name: string; utterances: number }[] {
     });
 }
 
-/**
- * Process whatever is pending now. MeetingSession only flushes on its batch policy
- * (line count / meeting-time age / cue words), and its clock is frozen while paused
- * or done, so a line injected then would wait forever. There is no public flush(),
- * so set the same flag finish() sets and ask it to schedule.
- */
 function flushNow(s: MeetingSession) {
-  if (s.status === "done") {
-    s.finish(); // re-flushes and returns to "done"
-    return;
-  }
-  const internal = s as unknown as { forceFlush: boolean; schedule: () => void };
-  internal.forceFlush = true;
-  internal.schedule();
+  s.flush();
 }
 
 async function readJson<T>(req: Request): Promise<Partial<T>> {

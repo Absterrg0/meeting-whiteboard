@@ -60,7 +60,8 @@ export function DocView({ markdown }: { markdown: string }) {
   useLayoutEffect(() => {
     const root = ref.current;
     if (!root) return;
-    const els = [...root.querySelectorAll(FLASH_SELECTOR)];
+    // Diagram labels render asynchronously (and the diagram flashes itself), so skip them.
+    const els = [...root.querySelectorAll(FLASH_SELECTOR)].filter((el) => !el.closest("svg"));
     const texts = els.map(ownText);
     const before = prev.current;
     if (before) {

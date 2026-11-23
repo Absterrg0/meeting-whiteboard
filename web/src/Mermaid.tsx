@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 
 type MermaidApi = typeof import("mermaid").default;
 
@@ -46,14 +46,26 @@ interface Props {
   empty?: string;
   /** Briefly highlight the diagram when it changes (not on first render). */
   flashOnChange?: boolean;
+  /** Allow the diagram to grow up to this multiple of its natural width (default: never upscale). */
+  maxScale?: number;
 }
 
-export function MermaidView({ code, className, empty = "No diagram yet.", flashOnChange }: Props) {
+export function MermaidView({ code, className, empty = "No diagram yet.", flashOnChange, maxScale }: Props) {
   // Keep the previous SVG on screen until the new one is ready, to avoid layout jumps.
   const [svg, setSvg] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [flash, setFlash] = useState(0);
   const rendered = useRef<string | null>(null);
+  const box = useRef<HTMLDivElement>(null);
+
+  // Mermaid caps the SVG at its natural width (inline max-width); optionally relax that cap.
+  useLayoutEffect(() => {
+    const el = box.current?.querySelector("svg");
+    if (!el || !maxScale) return;
+    el.dataset.naturalWidth ??= String(parseFloat(el.style.maxWidth));
+    const natural = Number(el.dataset.naturalWidth);
+    if (natural > 0) el.style.maxWidth = `${natural * maxScale}px`;
+  }, [svg, flash, maxScale]);
 
   useEffect(() => {
     if (!code) {
@@ -94,6 +106,7 @@ export function MermaidView({ code, className, empty = "No diagram yet.", flashO
   return (
     <div
       key={flash}
+      ref={box}
       className={`mermaid-view ${flash ? "flash" : ""} ${className ?? ""}`}
       // Mermaid output with securityLevel "strict" is sanitized by mermaid itself.
       dangerouslySetInnerHTML={{ __html: svg }}
