@@ -41,13 +41,13 @@ Model settings (in `.env` or the environment): `MODEL` (default `claude-sonnet-5
                                                    grounds)          └── human edits (same operations)
 ```
 
-1. **Batcher** (`src/session.ts`). Lines are buffered and handed to the agent when 4 are waiting, when the oldest has waited 45 s of meeting time, or straight away when a line sounds like a decision ("let's go with", "changing that", "let's drop"...). The cue list only makes updates faster; it never decides anything. The agent runs serially; if it is slow, lines pile up and go into the next batch, so nothing is dropped.
-2. **Agent step** (`src/agent/`). One model call per batch with: the current state (compact), the last ~24 already-processed lines for context, and the new lines. The model answers with tool calls, one per change: `record_item`, `update_item`, `supersede_item`, `upsert_component`, `remove_component`, `upsert_edge`, `remove_edge`, `set_meeting_info`. Validation errors go back to the model as tool errors and it corrects itself (up to 4 rounds per batch).
+1. **Batcher** (`src/session.ts`). Lines are buffered and handed to the agent when 4 are waiting, when the oldest has waited 45 s of meeting time, or straight away when a line sounds like a decision ("let's go with", "changing that", "let's drop"...). The cue list only makes updates faster; it never decides anything. The agent runs serially; if it is slow, lines pile up and go into the next batch. A failed model call is retried with the same lines; after three failures in a row the lines are skipped and the skip is logged, so one bad batch cannot stall the meeting.
+2. **Agent step** (`src/agent/`). One model call per batch with: the current state (compact), the last ~24 already-processed lines for context, and the new lines. The model answers with tool calls, one per change: `record_item`, `update_item`, `supersede_item`, `upsert_component`, `remove_component`, `upsert_edge`, `remove_edge`, `set_meeting_info`. Each call is applied to the live session state as it arrives (the UI updates call by call), and validation errors go back to the model as tool errors so it can correct itself (up to 4 rounds per batch). The agent never holds its own copy of the state, so a human edit made while the model is thinking is not overwritten.
 3. **Reducer** (`src/core/reducer.ts`). Validates each operation and applies it to the state. It rejects:
    - statuses that make no sense for the kind of item (an action item cannot be "accepted");
    - references to ids that do not exist;
    - superseding something already rejected;
-   - and any agent change whose quote cannot be found near the cited timestamp in the transcript (`src/core/grounding.ts`). That is the guard against the model writing things nobody said.
+   - and any agent change whose quote (at least three words) cannot be found within 90 s of the cited timestamp. A quote with a wrong timestamp is accepted only if it is an exact match of five or more words (`src/core/grounding.ts`). That is the guard against the model writing things nobody said.
 4. **Projections** (`src/core/render.ts`). The doc and the diagram are pure functions of the state. Revisions overwrite the current value and the old one goes to the item's history, so an old value cannot linger in the doc. It only shows up in the changelog.
 5. **End-of-meeting review.** When the meeting ends, one more pass looks at the full transcript and the state and fixes what incremental processing tends to miss: a sketch the team adopted without saying "agreed", stale component descriptions, duplicates. It uses the same tools and checks.
 
@@ -59,12 +59,12 @@ Components and edges carry a **basis**: the item ids that put them in the design
 
 | Basis items | Diagram |
 |---|---|
-| at least one accepted or tentative | shown |
+| at least one accepted or tentative decision (or requirement, if there are no decisions in the basis) | shown |
 | only an open question | shown dashed as TBD |
 | only proposals | hidden (shown greyed with "show proposals") |
 | all rejected or superseded | gone |
 
-So when the team drops the option a component depended on, the component leaves the diagram even if the model forgets to remove it.
+If a basis contains decisions, only the decisions count, so when the team drops the option a component depended on, the component leaves the diagram even if the model forgets to remove it. Facts ("today a nightly job rebuilds the index") never put anything on the diagram: it shows the target design, not the system being replaced.
 
 ### Rules the agent follows (see `src/agent/prompt.ts`)
 
@@ -75,7 +75,9 @@ So when the team drops the option a component depended on, the component leaves 
 
 ### Human corrections
 
-Every item in the Decisions tab can be accepted, rejected, dropped or edited. A human edit goes through the same reducer as an event with `source: human` and pins the item. The agent can still change a pinned item, but only on evidence said *after* the human edit, so a correction is not overwritten by the agent re-reading the same discussion, while a later revisit in the meeting still gets picked up.
+Every item in the Decisions tab can be accepted, rejected, dropped or edited, and new items can be added. A human edit goes through the same reducer as an event with `source: human` and pins the item. The agent can still change a pinned item, but only with a quote from a line said *after* the human edit (checked by transcript position), so a correction is not overwritten by the agent re-reading the same discussion, while a later revisit in the meeting still gets picked up. A superseded item cannot be revived in place; going back to an old option is recorded as a new decision that supersedes the current one, so the history stays linear.
+
+The model's rationale for an item ("Why") is kept separate from the reason for a change. When a value is revised, the change reason ("from 12 to 32 partitions because...") goes to the changelog, and the item's rationale is restated or dropped, so an old value cannot come back through the "Why" line.
 
 ## Design choices and trade-offs
 

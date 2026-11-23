@@ -56,14 +56,27 @@ export interface GroundingResult {
 
 /**
  * Find the utterance the agent is pointing at: the closest utterance within +/-90s of the
- * cited time whose text contains the quote. Short quotes are rejected, and a quote is
- * accepted elsewhere in the transcript only if it is an exact match of 5+ words.
+ * cited time whose text contains the quote. Quotes under three words must match verbatim
+ * near the cited time, and a quote is accepted elsewhere in the transcript only if it is
+ * an exact match of 5+ words.
  */
 export function ground(ts: string, quote: string, transcript: Utterance[]): GroundingResult {
-  if (tokens(quote).length < 3) {
-    return { ok: false, error: `quote "${quote}" is too short; quote at least three words of what was said.` };
-  }
   const t = parseTs(ts);
+  const n = tokens(quote).length;
+  if (n < 3) {
+    // Short quotes ("Agreed.", "Fine, five days") must match exactly, near the cited time:
+    // two words verbatim, or a one-word line in full.
+    const nq = normalize(quote);
+    const hit = Number.isNaN(t)
+      ? undefined
+      : transcript.find(
+          (u) =>
+            Math.abs(u.t - t) <= 90 &&
+            (n >= 2 ? normalize(u.text).includes(nq) : n === 1 && normalize(u.text) === nq),
+        );
+    if (hit) return { ok: true, utterance: hit };
+    return { ok: false, error: `quote "${quote}" is too short to verify; quote at least three words of what was said.` };
+  }
   // Prefer utterances near the cited time (models sometimes cite a neighbour).
   if (!Number.isNaN(t)) {
     const near = transcript

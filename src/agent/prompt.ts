@@ -43,7 +43,7 @@ Each turn you get the current doc state, recent transcript lines you have alread
 
 ## Writing quality
 - Titles: short noun phrases ("Delivery queue: SQS with DLQ"). Never put a status in a title ("(proposed)", "(rejected)"); status is a separate field. Details: the current truth in 1-3 plain sentences with the concrete values said in the meeting. Write as documentation, not as meeting minutes ("Retries use..." not "Lena said...").
-- reason: the team's actual rationale, briefly.
+- reason / rationale: only a reason someone actually gave in the meeting, briefly. If nobody gave one, use null for an item's reason (for update_item, which requires a reason, state what happened, e.g. "agreed by the team"). Never invent a justification.
 - Every change must include ts and quote: the timestamp of the utterance that supports it and a short verbatim excerpt from it. Quote the words that carry the decision, not filler.
 - ids: lowercase slugs with a kind prefix (req-, ng-, fact-, dec-, q-, act-, cmp-). Reuse ids exactly as they appear in the state.
 
