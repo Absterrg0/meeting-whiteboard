@@ -63,7 +63,7 @@ export function App() {
     }
   });
   const injectRef = useRef<InjectHandle>(null);
-  const { snap, fresh, receivedAt, connected } = useLiveSession(sessionId);
+  const { snap, fresh, receivedAt, connected, lost } = useLiveSession(sessionId);
   const clock = useMeetingClock(snap, receivedAt);
   const now = useNow(fresh);
 
@@ -168,6 +168,7 @@ export function App() {
         snap={view === "doc" ? snap : null}
         clock={clock}
         connected={connected}
+        lost={lost}
         theme={theme.pref}
         onTheme={theme.set}
         sidebarOpen={sidebarOpen}

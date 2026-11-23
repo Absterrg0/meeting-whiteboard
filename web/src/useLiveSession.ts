@@ -26,6 +26,8 @@ export function useLiveSession(id: string | null) {
   const [fresh, setFresh] = useState<FreshMap>({});
   const [receivedAt, setReceivedAt] = useState(0);
   const [connected, setConnected] = useState(false);
+  /** The server no longer has this session (it was restarted); reconnecting cannot help. */
+  const [lost, setLost] = useState(false);
   const [generation, setGeneration] = useState(0);
   const snapRef = useRef<LiveSnapshot | null>(null);
 
@@ -33,6 +35,7 @@ export function useLiveSession(id: string | null) {
     setSnap(null);
     snapRef.current = null;
     setFresh({});
+    setLost(false);
   }, [id]);
 
   useEffect(() => {
@@ -85,14 +88,26 @@ export function useLiveSession(id: string | null) {
       }
     });
     es.onopen = () => setConnected(true);
-    es.onerror = () => setConnected(false);
+    es.onerror = () => {
+      setConnected(false);
+      // EventSource retries forever; stop if the session itself is gone.
+      fetch(api.docUrl(id))
+        .then((r) => {
+          if (r.status === 404 && !dead) {
+            dead = true;
+            es.close();
+            setLost(true);
+          }
+        })
+        .catch(() => {});
+    };
     return () => {
       dead = true;
       es.close();
     };
   }, [id, generation]);
 
-  return { snap, fresh, receivedAt, connected };
+  return { snap, fresh, receivedAt, connected, lost };
 }
 
 /** The meeting clock, ticking between snapshots while the meeting runs. */

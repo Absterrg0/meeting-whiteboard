@@ -55,6 +55,7 @@ export interface TopBarProps {
   snap: LiveSnapshot | null;
   clock: string;
   connected: boolean;
+  lost?: boolean;
   theme: ThemePref;
   onTheme: (t: ThemePref) => void;
   sidebarOpen: boolean;
@@ -63,7 +64,7 @@ export interface TopBarProps {
   onControl: (a: "pause" | "resume" | "finish") => void;
 }
 
-export function TopBar({ snap, clock, connected, theme, onTheme, sidebarOpen, onSidebar, onHome, onControl }: TopBarProps) {
+export function TopBar({ snap, clock, connected, lost, theme, onTheme, sidebarOpen, onSidebar, onHome, onControl }: TopBarProps) {
   const [stats, setStats] = useState(false);
   const [confirmEnd, setConfirmEnd] = useState(false);
   const title = snap ? docTitle(snap.state.meeting.title, snap.title) : "";
@@ -91,7 +92,15 @@ export function TopBar({ snap, clock, connected, theme, onTheme, sidebarOpen, on
 
       {snap && <LiveIndicator snap={snap} clock={clock} />}
       {snap && <Thinking snap={snap} />}
-      {snap && !connected && <span className="reconnecting">Reconnecting…</span>}
+      {snap && lost && (
+        <span className="reconnecting">
+          Session ended: the server restarted.{" "}
+          <button className="quiet-btn" onClick={onHome}>
+            Start a new one
+          </button>
+        </span>
+      )}
+      {snap && !connected && !lost && <span className="reconnecting">Reconnecting…</span>}
 
       <span className="grow" />
 
