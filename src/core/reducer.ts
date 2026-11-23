@@ -328,7 +328,8 @@ const recordItem: Handler<RecordItem> = (state, input, ctx) => {
     state.topics[input.topic] = {
       id: input.topic,
       title,
-      question: input.topic_question ?? input.title,
+      // No invented question: an item title is not one. Empty until the scribe gives one.
+      question: input.topic_question ?? "",
       createdAt: ev.ts,
       updatedAt: ev.ts,
       evidence: [ev],
@@ -383,7 +384,9 @@ const recordItem: Handler<RecordItem> = (state, input, ctx) => {
   state.order.items.push(item.id);
   if (input.replaces) {
     const old = getItem(state, input.replaces);
-    if (!item.topic && old.topic) item.topic = old.topic;
+    // A replacement answers the same question: it belongs in the old answer's topic, even if
+    // the model filed it under a new one (which is then left empty and not shown).
+    if (old.topic) item.topic = old.topic;
     const r = supersedeItem(
       state,
       {

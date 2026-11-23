@@ -106,7 +106,8 @@ function autoBlocks(state: DocState, decisions: Item[]): Block[] {
 }
 
 export function buildDoc(state: DocState): DocModel {
-  const views = topicViews(state);
+  // Topics with no items (e.g. left empty when a replacement moved into the original topic) aren't shown.
+  const views = topicViews(state).filter((v) => state.order.items.some((id) => state.items[id]?.topic === v.topic.id));
   const wide = meetingWide(state);
   const blocks: Block[] = views.map((v) => {
     const items = state.order.items.map((id) => state.items[id]!).filter((i) => i.topic === v.topic.id);

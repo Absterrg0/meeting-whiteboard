@@ -199,7 +199,9 @@ export function toMarkdown(state: DocState, opts: RenderOptions = {}): string {
     out.push("");
   }
 
-  const topics = topicViews(state).filter((t) => t.status !== "closed" || t.rejected.length || t.replaced.length || t.resolved.length);
+  const topics = topicViews(state).filter(
+    (t) => (t.status !== "closed" || t.rejected.length || t.replaced.length || t.resolved.length) && hasItems(state, t.topic.id),
+  );
   const wideHistory = [...wide.rejected, ...wide.replaced];
   if (topics.length || wide.decisions.length || wide.proposals.length || wideHistory.length) {
     out.push("## Decisions", "");
@@ -208,7 +210,7 @@ export function toMarkdown(state: DocState, opts: RenderOptions = {}): string {
       if (t.decision) {
         const d = t.decision;
         out.push(`**${d.title}.** ${sentence(d.detail)}${why(d)}${unsure(d)}${cite(d)}`, "");
-      } else {
+      } else if (t.topic.question) {
         out.push(`_${sentence(t.topic.question)}_`, "");
       }
       const lines: string[] = [];
@@ -264,6 +266,10 @@ export function toMarkdown(state: DocState, opts: RenderOptions = {}): string {
     out.push("");
   }
   return out.join("\n");
+}
+
+function hasItems(state: DocState, topicId: string): boolean {
+  return Object.values(state.items).some((i) => i.topic === topicId);
 }
 
 function unsure(i: Item): string {
