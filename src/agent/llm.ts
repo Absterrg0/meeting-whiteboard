@@ -95,6 +95,7 @@ const PRICES: Record<string, [number, number, number, number]> = {
   "anthropic/claude-haiku-5-5": [0.1, 0.5, 0.01, 0.125],
   // OpenAI standard tier (prompts under 272K tokens), as published at the GPT-6 launch.
   "openai/gpt-6-sol": [2, 10, 0.2, 2.5],
+  "openai/gpt-6.1-sol": [2, 10, 0.1, 2.5],
   "openai/gpt-6-luna": [0.1, 0.5, 0.01, 0.125],
 };
 

@@ -11,8 +11,10 @@ import {
   type RecordItem,
   type RemoveComponent,
   type RemoveEdge,
+  type ConfirmItem,
   type SetMeetingInfo,
   type SetOverview,
+  type UpsertTopic,
   type SupersedeItem,
   type UpdateItem,
   type UpsertComponent,
@@ -21,6 +23,7 @@ import {
 import {
   ALLOWED_STATUSES,
   type ChangeEvent,
+  type ChangeKind,
   type DocState,
   type Evidence,
   type HistoryEntry,
@@ -65,9 +68,10 @@ export function applyOp(prev: DocState, op: Op, ctx: ApplyContext): ApplyResult 
   }
   const state = structuredClone(prev);
   try {
-    const { ts, targets, summary } = HANDLERS[op.name as OpName](state, parsed.data as never, ctx);
+    const { ts, targets, summary, kind } = HANDLERS[op.name as OpName](state, parsed.data as never, ctx);
     const event: ChangeEvent = {
       seq: ctx.seq,
+      kind,
       ts,
       at: (ctx.now ?? (() => new Date().toISOString()))(),
       source: ctx.source,
@@ -87,6 +91,7 @@ interface HandlerResult {
   ts: string;
   targets: string[];
   summary: string;
+  kind: ChangeKind;
 }
 type Handler<T> = (state: DocState, input: T, ctx: ApplyContext) => HandlerResult;
 
@@ -139,8 +144,9 @@ function pin(item: Item, ctx: ApplyContext) {
   item.pinnedAfterIdx = ctx.transcript.length;
 }
 
+// "one" and "zero" are left out: "one queue per tenant" is not a value.
 const NUMBER_WORDS: Record<string, number> = {
-  zero: 0, one: 1, two: 2, three: 3, four: 4, five: 5, six: 6, seven: 7, eight: 8, nine: 9, ten: 10,
+  two: 2, three: 3, four: 4, five: 5, six: 6, seven: 7, eight: 8, nine: 9, ten: 10,
   eleven: 11, twelve: 12, thirteen: 13, fourteen: 14, fifteen: 15, sixteen: 16, seventeen: 17, eighteen: 18,
   nineteen: 19, twenty: 20, thirty: 30, forty: 40, fifty: 50, sixty: 60, seventy: 70, eighty: 80, ninety: 90,
   hundred: 100, thousand: 1000,
@@ -149,7 +155,8 @@ const NUMBER_WORDS: Record<string, number> = {
 /** The numbers a text states, digits or words ("5", "five", "1.5"). */
 export function numbersIn(text: string): Set<number> {
   const out = new Set<number>();
-  for (const m of text.toLowerCase().matchAll(/\b(\d+(?:\.\d+)?)\b|\b([a-z]+)\b/g)) {
+  // Digits may carry a unit suffix: 24h, 200ms, 10k, 5s, 3x, 99.9%.
+  for (const m of text.toLowerCase().matchAll(/(?<![\w.])(\d+(?:\.\d+)?)(?=[a-z%]*\b)|\b([a-z]+)\b/g)) {
     if (m[1]) out.add(Number(m[1]));
     else if (m[2] && m[2] in NUMBER_WORDS) out.add(NUMBER_WORDS[m[2]]!);
   }
@@ -175,15 +182,94 @@ function checkRetiredValues(before: string, after: string, places: { title: stri
   }
 }
 
+function checkTopic(state: DocState, topic: string | null | undefined) {
+  if (topic && !state.topics[topic]) {
+    fail(`no topic '${topic}'. Create it with upsert_topic first. Existing topics: ${Object.keys(state.topics).join(", ") || "(none)"}`);
+  }
+}
+
+/**
+ * One live answer per topic: a topic can't have two accepted/tentative decisions at once,
+ * so changing an answer is always an explicit supersede (or a rejection first).
+ */
+function checkOneLiveDecision(state: DocState, item: Pick<Item, "id" | "kind" | "status" | "topic">, except: string[] = []) {
+  if (item.kind !== "decision" || !item.topic || !["accepted", "tentative"].includes(item.status)) return;
+  const other = Object.values(state.items).find(
+    (i) =>
+      i.id !== item.id &&
+      !except.includes(i.id) &&
+      i.kind === "decision" &&
+      i.topic === item.topic &&
+      ["accepted", "tentative"].includes(i.status),
+  );
+  if (other) {
+    fail(
+      `topic '${item.topic}' already has a live decision '${other.id}' ("${other.title}"). If this replaces it, record this one as proposed and call supersede_item ${other.id} -> ${item.id}; if it is a separate choice, put it in its own topic`,
+    );
+  }
+}
+
+function itemKind(item: Item, statusChanged: boolean, detailChanged: boolean): ChangeKind {
+  if (item.kind === "action_item") return "action";
+  if (item.kind === "open_question") return item.status === "resolved" ? "resolved" : "opened";
+  if (item.kind === "decision") {
+    if (statusChanged || !detailChanged) {
+      if (item.status === "accepted" || item.status === "tentative") return statusChanged ? "decided" : "revised";
+      if (item.status === "proposed") return "proposed";
+      if (item.status === "rejected") return "rejected";
+      if (item.status === "superseded") return "replaced";
+    }
+    return "revised";
+  }
+  return detailChanged ? "revised" : "noted";
+}
+
+const upsertTopic: Handler<UpsertTopic> = (state, input, ctx) => {
+  const ev = evidenceFor(ctx, input.ts, input.quote);
+  const existing = state.topics[input.id];
+  if (existing) {
+    if (existing.title === input.title && existing.question === input.question) fail(`upsert_topic on '${input.id}' changes nothing`);
+    existing.title = input.title;
+    existing.question = input.question;
+    existing.updatedAt = ev.ts;
+    existing.evidence.push(ev);
+    return { ts: ev.ts, targets: [input.id], summary: `Renamed topic to "${input.title}".`, kind: "noted" };
+  }
+  state.topics[input.id] = {
+    id: input.id,
+    title: input.title,
+    question: input.question,
+    createdAt: ev.ts,
+    updatedAt: ev.ts,
+    evidence: [ev],
+  };
+  state.order.topics.push(input.id);
+  return { ts: ev.ts, targets: [input.id], summary: `New topic "${input.title}": ${input.question}`, kind: "noted" };
+};
+
+const confirmItem: Handler<ConfirmItem> = (state, input, ctx) => {
+  const item = getItem(state, input.id);
+  if (item.confidence === "high") fail(`'${item.id}' is not marked low-confidence`);
+  const ev = evidenceFor(ctx, input.ts ?? formatTs(ctx.meetingTime), input.quote ?? (ctx.source === "agent" ? undefined : "confirmed"));
+  item.confidence = "high";
+  item.history.push({ ts: ev.ts, field: "confidence", from: "low", to: "high", reason: "confirmed", source: ctx.source });
+  item.updatedAt = ev.ts;
+  pin(item, ctx);
+  return { ts: ev.ts, targets: [item.id], summary: `Confirmed "${item.title}".`, kind: "confirmed" };
+};
+
 const recordItem: Handler<RecordItem> = (state, input, ctx) => {
   if (state.items[input.id]) fail(`id '${input.id}' already exists; use update_item to change it`);
   checkStatus(input.kind, input.status);
   checkRelated(state, input.related);
   if (input.status === "superseded") fail("record the replacement and use supersede_item instead");
+  checkTopic(state, input.topic);
   const ev = evidenceFor(ctx, input.ts, input.quote);
   const item: Item = {
     id: input.id,
     kind: input.kind,
+    topic: input.topic ?? null,
+    confidence: input.confidence ?? "high",
     title: input.title,
     detail: input.detail,
     status: input.status,
@@ -214,6 +300,7 @@ const recordItem: Handler<RecordItem> = (state, input, ctx) => {
       source: ctx.source,
     });
   }
+  checkOneLiveDecision(state, item);
   state.items[item.id] = item;
   state.order.items.push(item.id);
   const owner = item.owner ? ` (owner: ${item.owner}${item.due ? `, due ${item.due}` : ""})` : "";
@@ -223,6 +310,7 @@ const recordItem: Handler<RecordItem> = (state, input, ctx) => {
     summary: `Added ${item.kind.replace("_", " ")} "${item.title}" as ${item.status}${owner}.${
       input.revised_from ? ` Revised during the discussion from: "${input.revised_from}".` : ""
     }`,
+    kind: input.revised_from ? "revised" : item.kind === "decision" && ["accepted", "tentative"].includes(item.status) ? "decided" : itemKind(item, false, false),
   };
 };
 
@@ -260,6 +348,16 @@ const updateItem: Handler<UpdateItem> = (state, input, ctx) => {
     });
     (item as unknown as Record<string, unknown>)[f] = next ?? null;
   }
+  if (input.topic !== undefined && (input.topic ?? null) !== item.topic) {
+    checkTopic(state, input.topic);
+    changes.push({ ts: ev.ts, field: "topic", from: item.topic, to: input.topic ?? null, reason: input.reason, source: ctx.source });
+    item.topic = input.topic ?? null;
+  }
+  if (input.confidence && input.confidence !== item.confidence) {
+    changes.push({ ts: ev.ts, field: "confidence", from: item.confidence, to: input.confidence, reason: input.reason, source: ctx.source });
+    item.confidence = input.confidence;
+  }
+  checkOneLiveDecision(state, item);
   if (input.related) item.related = [...new Set([...item.related, ...input.related])];
   if (changes.length === 0 && !input.related) fail(`update_item on '${item.id}' changes nothing`);
 
@@ -295,6 +393,7 @@ const updateItem: Handler<UpdateItem> = (state, input, ctx) => {
     ts: ev.ts,
     targets: [item.id],
     summary: `Updated "${item.title}" (${parts.join("; ") || "links"}). Reason: ${input.reason}`,
+    kind: itemKind(item, statusChanged, detailChanged),
   };
 };
 
@@ -306,8 +405,8 @@ const supersedeItem: Handler<SupersedeItem> = (state, input, ctx) => {
   checkPinned(oldItem, ctx, ev);
   if (oldItem.status === "superseded") fail(`'${oldItem.id}' is already superseded by '${oldItem.supersededBy}'`);
   if (oldItem.status === "rejected") fail(`'${oldItem.id}' was rejected; it cannot also be superseded`);
-  if (!["accepted", "tentative", "open"].includes(newItem.status)) {
-    fail(`replacement '${newItem.id}' must be accepted, tentative or open (it is ${newItem.status}); update it first`);
+  if (!["accepted", "tentative", "open", "proposed"].includes(newItem.status)) {
+    fail(`replacement '${newItem.id}' is ${newItem.status}; it must be proposed, accepted or tentative`);
   }
   if (ctx.source === "agent") {
     checkRetiredValues(oldItem.detail, newItem.detail, { title: newItem.title, rationale: newItem.reason });
@@ -325,6 +424,19 @@ const supersedeItem: Handler<SupersedeItem> = (state, input, ctx) => {
   });
   oldItem.status = "superseded";
   oldItem.supersededBy = newItem.id;
+  // The replacement answers the same question: same topic, and it becomes the live answer.
+  if (oldItem.topic) newItem.topic = oldItem.topic;
+  if (newItem.kind === "decision" && (newItem.status === "proposed" || input.new_status)) {
+    const to = input.new_status ?? "accepted";
+    if (newItem.status !== to) {
+      newItem.history.push({ ts: ev.ts, field: "status", from: newItem.status, to, reason: input.reason, source: ctx.source });
+      newItem.status = to;
+      newItem.updatedAt = ev.ts;
+    }
+  } else if (newItem.status === "proposed") {
+    newItem.status = "accepted";
+  }
+  checkOneLiveDecision(state, newItem, [oldItem.id]);
   oldItem.reason = input.reason;
   oldItem.evidence.push(ev);
   oldItem.updatedAt = ev.ts;
@@ -334,6 +446,7 @@ const supersedeItem: Handler<SupersedeItem> = (state, input, ctx) => {
     ts: ev.ts,
     targets: [oldItem.id, newItem.id],
     summary: `"${oldItem.title}" superseded by "${newItem.title}". Reason: ${input.reason}`,
+    kind: "replaced",
   };
 };
 
@@ -356,6 +469,7 @@ const upsertComponent: Handler<UpsertComponent> = (state, input, ctx) => {
       ts,
       targets: [input.id],
       summary: `${wasRemoved ? "Restored" : "Updated"} component "${input.name}".`,
+      kind: "diagram",
     };
   }
   state.components[input.id] = {
@@ -370,7 +484,7 @@ const upsertComponent: Handler<UpsertComponent> = (state, input, ctx) => {
     updatedAt: ts,
   };
   state.order.components.push(input.id);
-  return { ts, targets: [input.id], summary: `Added component "${input.name}" (${input.type}).` };
+  return { ts, targets: [input.id], summary: `Added component "${input.name}" (${input.type}).` , kind: "diagram" };
 };
 
 const removeComponent: Handler<RemoveComponent> = (state, input, ctx) => {
@@ -387,7 +501,7 @@ const removeComponent: Handler<RemoveComponent> = (state, input, ctx) => {
       e.updatedAt = ev.ts;
     }
   }
-  return { ts: ev.ts, targets: [c.id], summary: `Removed component "${c.name}". Reason: ${input.reason}` };
+  return { ts: ev.ts, targets: [c.id], summary: `Removed component "${c.name}". Reason: ${input.reason}` , kind: "diagram" };
 };
 
 const upsertEdge: Handler<UpsertEdge> = (state, input, ctx) => {
@@ -422,7 +536,7 @@ const upsertEdge: Handler<UpsertEdge> = (state, input, ctx) => {
   }
   const a = state.components[input.from]!.name;
   const b = state.components[input.to]!.name;
-  return { ts, targets: [eid], summary: `Connected ${a} → ${b} (${input.label}).` };
+  return { ts, targets: [eid], summary: `Connected ${a} → ${b} (${input.label}).` , kind: "diagram" };
 };
 
 const removeEdge: Handler<RemoveEdge> = (state, input, ctx) => {
@@ -432,22 +546,24 @@ const removeEdge: Handler<RemoveEdge> = (state, input, ctx) => {
   const ts = formatTs(ctx.meetingTime);
   e.removed = true;
   e.updatedAt = ts;
-  return { ts, targets: [eid], summary: `Removed connection ${eid}. Reason: ${input.reason}` };
+  return { ts, targets: [eid], summary: `Removed connection ${eid}. Reason: ${input.reason}` , kind: "diagram" };
 };
 
 const setMeetingInfo: Handler<SetMeetingInfo> = (state, input, ctx) => {
   const ev = evidenceFor(ctx, input.ts, input.quote);
   state.meeting = { ...state.meeting, title: input.title, context: input.context };
-  return { ts: ev.ts, targets: [], summary: `Set doc title to "${input.title}".` };
+  return { ts: ev.ts, targets: [], summary: `Set doc title to "${input.title}".`, kind: "noted" };
 };
 
 const setOverview: Handler<SetOverview> = (state, input, ctx) => {
   if (ctx.source === "agent") fail("the overview is maintained by the editor");
   state.meeting.overview = input.overview.trim();
-  return { ts: formatTs(ctx.meetingTime), targets: [], summary: "Updated the overview." };
+  return { ts: formatTs(ctx.meetingTime), targets: [], summary: "Updated the overview." , kind: "diagram" };
 };
 
 const HANDLERS: { [N in OpName]: Handler<never> } = {
+  upsert_topic: upsertTopic as Handler<never>,
+  confirm_item: confirmItem as Handler<never>,
   set_overview: setOverview as Handler<never>,
   set_meeting_info: setMeetingInfo as Handler<never>,
   record_item: recordItem as Handler<never>,

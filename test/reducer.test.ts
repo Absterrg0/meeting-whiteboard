@@ -148,9 +148,8 @@ describe("supersede_item", () => {
   it("refuses invalid supersessions", () => {
     const h = redisThenPostgres();
     expect(h.try("supersede_item", { old_id: "dec-redis", new_id: "dec-redis", reason: "x x", ts: "00:05:00", quote: "let's drop Redis" }).ok).toBe(false);
-    // Replacement must be live.
+    // A proposed replacement is promoted by the supersession (tested below); a rejected one is refused.
     h.apply("record_item", decision("dec-memcached", "proposed", "00:00:30", "What if we used Redis"));
-    expect(h.try("supersede_item", { old_id: "dec-redis", new_id: "dec-memcached", reason: "x x", ts: "00:05:00", quote: "let's drop Redis" }).ok).toBe(false);
     // Rejected items cannot be superseded.
     h.apply("update_item", { id: "dec-memcached", status: "rejected", reason: "nope", ts: "00:05:00", quote: "let's drop Redis" });
     expect(h.try("supersede_item", { old_id: "dec-memcached", new_id: "dec-postgres", reason: "x x", ts: "00:05:00", quote: "let's drop Redis" }).ok).toBe(false);
@@ -304,5 +303,48 @@ describe("stale-value guard", () => {
   it("ignores numbers that did not change", () => {
     const h = new Harness().apply("record_item", decision("dec-r", "accepted", "00:01:30", "Sessions expire after 7 days", { title: "Retries for 24 hours", detail: "Retry for 24 hours, 3 attempts." }));
     expect(h.try("update_item", { id: "dec-r", detail: "Retry for 24 hours, 5 attempts.", reason: "more attempts", ts: "00:03:35", quote: "Fine, 14 days" }).ok).toBe(true);
+  });
+});
+
+describe("topics", () => {
+  const withTopic = () =>
+    new Harness()
+      .apply("upsert_topic", { id: "top-session-store", title: "Session store", question: "Where do sessions live?", ts: "00:00:30", quote: "What if we used Redis" })
+      .apply("record_item", decision("dec-redis", "accepted", "00:01:30", "we're going with Redis", { topic: "top-session-store" }));
+
+  it("keeps one live decision per topic: a second accepted answer is refused", () => {
+    const r = withTopic().try("record_item", decision("dec-postgres", "accepted", "00:05:30", "Agreed, Postgres for sessions", { topic: "top-session-store" }));
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.error).toMatch(/already has a live decision 'dec-redis'.*supersede_item/);
+  });
+
+  it("supersede promotes a proposed replacement and keeps it in the topic", () => {
+    const h = withTopic()
+      .apply("record_item", decision("dec-postgres", "proposed", "00:05:00", "keep sessions in Postgres instead", { topic: "top-session-store" }))
+      .apply("supersede_item", { old_id: "dec-redis", new_id: "dec-postgres", reason: "one less system", ts: "00:05:30", quote: "Agreed, Postgres for sessions" });
+    expect(h.state.items["dec-postgres"]).toMatchObject({ status: "accepted", topic: "top-session-store" });
+    expect(h.state.items["dec-redis"]!.status).toBe("superseded");
+    expect(h.events.at(-1)!.kind).toBe("replaced");
+  });
+
+  it("supersede can make the replacement tentative and pulls an untopiced replacement into the topic", () => {
+    const h = withTopic()
+      .apply("record_item", decision("dec-postgres", "proposed", "00:05:00", "keep sessions in Postgres instead"))
+      .apply("supersede_item", { old_id: "dec-redis", new_id: "dec-postgres", new_status: "tentative", reason: "one less system", ts: "00:05:30", quote: "Agreed, Postgres for sessions" });
+    expect(h.state.items["dec-postgres"]).toMatchObject({ status: "tentative", topic: "top-session-store" });
+  });
+
+  it("refuses unknown topics and classifies events", () => {
+    const h = withTopic();
+    expect(h.try("record_item", decision("dec-x", "proposed", "00:05:00", "keep sessions in Postgres instead", { topic: "top-missing" })).ok).toBe(false);
+    expect(h.events.map((e) => e.kind)).toEqual(["noted", "decided"]);
+  });
+
+  it("confirms low-confidence items", () => {
+    const h = new Harness().apply("record_item", decision("dec-cache", "accepted", "00:01:30", "we're going with Redis", { confidence: "low" }));
+    expect(h.state.items["dec-cache"]!.confidence).toBe("low");
+    h.apply("confirm_item", { id: "dec-cache" }, "human");
+    expect(h.state.items["dec-cache"]!.confidence).toBe("high");
+    expect(h.events.at(-1)!.kind).toBe("confirmed");
   });
 });

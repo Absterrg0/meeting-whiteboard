@@ -76,9 +76,32 @@ export interface HistoryEntry {
   source: Source;
 }
 
+/**
+ * A topic is one question the meeting is working on ("Which queue carries deliveries?").
+ * Items hang off topics; a topic's status is derived from its items (see topics.ts),
+ * and a topic can have at most one live (accepted/tentative) decision at a time, so a
+ * reversal is always explicit: the new decision supersedes the old one.
+ */
+export interface Topic {
+  id: string;
+  title: string;
+  /** The question the topic answers, in one line. */
+  question: string;
+  createdAt: string;
+  updatedAt: string;
+  evidence: Evidence[];
+}
+
 export interface Item {
   id: string;
   kind: ItemKind;
+  /** Topic this item belongs to (null for meeting-wide requirements, facts, actions). */
+  topic: string | null;
+  /**
+   * "low" when the agent was unsure (ambiguous agreement, unclear owner...). Shown as
+   * "needs confirmation" until a human confirms it or the discussion makes it clear.
+   */
+  confidence: "high" | "low";
   title: string;
   /** Current statement of the item, written as documentation (1-3 sentences). */
   detail: string;
@@ -149,15 +172,32 @@ export interface MeetingInfo {
 
 export interface DocState {
   meeting: MeetingInfo;
+  topics: Record<string, Topic>;
   items: Record<string, Item>;
   components: Record<string, Component>;
   edges: Record<string, Edge>;
   /** Insertion order, for stable rendering. */
-  order: { items: string[]; components: string[]; edges: string[] };
+  order: { topics: string[]; items: string[]; components: string[]; edges: string[] };
 }
+
+/** What a change means to a reader (drives the activity feed). */
+export type ChangeKind =
+  | "decided" // a decision accepted or made tentative
+  | "proposed"
+  | "rejected"
+  | "replaced" // superseded by another decision
+  | "revised" // detail/value changed
+  | "opened" // open question raised
+  | "resolved" // open question answered
+  | "action" // action item added/changed
+  | "noted" // requirement, non-goal, fact, topic, meeting info
+  | "confirmed" // low-confidence item confirmed
+  | "diagram" // editor: components, edges, overview
+  | "other";
 
 export interface ChangeEvent {
   seq: number;
+  kind: ChangeKind;
   /** Meeting timestamp the change is attributed to. */
   ts: string;
   /** Wall-clock ISO time it was applied. */
@@ -175,10 +215,11 @@ export interface ChangeEvent {
 export function emptyState(): DocState {
   return {
     meeting: { title: "", context: "", overview: "" },
+    topics: {},
     items: {},
     components: {},
     edges: {},
-    order: { items: [], components: [], edges: [] },
+    order: { topics: [], items: [], components: [], edges: [] },
   };
 }
 

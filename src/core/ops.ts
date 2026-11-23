@@ -58,6 +58,14 @@ export const RecordItem = z.object({
   owner: z.string().nullable().optional().describe("For action items: who took it."),
   due: z.string().nullable().optional().describe("For action items: due date exactly as said, else null."),
   related: lenientArray(id).optional().describe("Ids of related items."),
+  topic: id
+    .nullable()
+    .optional()
+    .describe("Topic id (top-...) this item belongs to. Create the topic with upsert_topic first. Null for meeting-wide items."),
+  confidence: z
+    .enum(["high", "low"])
+    .optional()
+    .describe('"low" when you are unsure (ambiguous agreement, unclear owner, half-heard). Shown as "needs confirmation". Default high.'),
   revised_from: z
     .string()
     .nullable()
@@ -77,6 +85,8 @@ export const UpdateItem = z.object({
   owner: z.string().nullable().optional(),
   due: z.string().nullable().optional(),
   related: lenientArray(id).optional(),
+  topic: id.nullable().optional().describe("Move the item to another topic."),
+  confidence: z.enum(["high", "low"]).optional(),
   rationale: z
     .string()
     .nullable()
@@ -96,7 +106,10 @@ export type UpdateItem = z.infer<typeof UpdateItem>;
 
 export const SupersedeItem = z.object({
   old_id: id,
-  new_id: id.describe("The replacing item. Create it with record_item first (earlier in the same response is fine)."),
+  new_id: id.describe(
+    "The replacing item. Record it first with record_item (as proposed is fine; earlier in the same response is fine). It becomes new_status.",
+  ),
+  new_status: z.enum(["accepted", "tentative"]).optional().describe("Status of the replacement after the swap (default accepted)."),
   reason: z.string().min(3),
   ...grounding,
 });
@@ -151,7 +164,24 @@ export const SetOverview = z.object({
 });
 export type SetOverview = z.infer<typeof SetOverview>;
 
+export const UpsertTopic = z.object({
+  id: id.describe("Slug prefixed 'top-', e.g. 'top-delivery-queue'."),
+  title: z.string().min(2).max(60).describe("Short noun phrase naming the subject: 'Delivery queue', 'Secret storage'."),
+  question: z.string().min(3).max(160).describe("The question the topic answers: 'Which queue carries webhook deliveries?'"),
+  ...grounding,
+});
+export type UpsertTopic = z.infer<typeof UpsertTopic>;
+
+export const ConfirmItem = z.object({
+  id,
+  ts: grounding.ts.optional(),
+  quote: grounding.quote.optional(),
+});
+export type ConfirmItem = z.infer<typeof ConfirmItem>;
+
 export const OPS = {
+  upsert_topic: UpsertTopic,
+  confirm_item: ConfirmItem,
   set_meeting_info: SetMeetingInfo,
   record_item: RecordItem,
   update_item: UpdateItem,
