@@ -43,10 +43,6 @@ function listTranscripts(): { name: string; utterances: number }[] {
     });
 }
 
-function flushNow(s: MeetingSession) {
-  s.flush();
-}
-
 async function readJson<T>(req: Request): Promise<Partial<T>> {
   try {
     return (await req.json()) as Partial<T>;
@@ -56,6 +52,29 @@ async function readJson<T>(req: Request): Promise<Partial<T>> {
 }
 
 const app = new Hono();
+
+// The server spends API budget, so other web pages must not be able to drive it:
+// POSTs must be JSON (forces a CORS preflight cross-origin) and same-origin when an Origin is sent.
+app.use("/api/*", async (c, next) => {
+  if (c.req.method === "POST") {
+    if (!(c.req.header("content-type") ?? "").includes("application/json")) {
+      return c.json({ error: "expected application/json" }, 415);
+    }
+    const origin = c.req.header("origin");
+    if (origin) {
+      const host = c.req.header("host");
+      let ok = false;
+      try {
+        const o = new URL(origin);
+        ok = o.host === host || ["localhost", "127.0.0.1"].includes(o.hostname);
+      } catch {
+        ok = false;
+      }
+      if (!ok) return c.json({ error: "cross-origin request refused" }, 403);
+    }
+  }
+  await next();
+});
 
 app.onError((err, c) => {
   console.error(err);
@@ -144,7 +163,7 @@ app.post("/api/session/:id/control", async (c) => {
       s.finish();
       break;
     case "flush":
-      flushNow(s);
+      s.flush();
       break;
     case undefined:
       if (body.speed === undefined) return c.json({ error: "action or speed required" }, 400);
@@ -163,7 +182,6 @@ app.post("/api/session/:id/utterance", async (c) => {
   const text = String(body.text ?? "").trim();
   if (!text) return c.json({ error: "text is required" }, 400);
   const utt = s.addUtterance({ speaker, text });
-  if (s.status !== "running") flushNow(s);
   return c.json({ ok: true, utterance: utt });
 });
 
@@ -269,7 +287,9 @@ if (existsSync(DIST_DIR)) {
 
 if (!process.env.ANTHROPIC_API_KEY) console.warn("warning: ANTHROPIC_API_KEY is not set; agent calls will fail");
 
-const server = serve({ fetch: app.fetch, port: PORT }, (info) => {
+// Local tool: listen on loopback only (set HOST=0.0.0.0 to expose it deliberately).
+const HOST = process.env.HOST ?? "127.0.0.1";
+const server = serve({ fetch: app.fetch, port: PORT, hostname: HOST }, (info) => {
   console.log(`meeting-whiteboard server on http://localhost:${info.port}`);
 });
 

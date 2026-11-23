@@ -77,6 +77,13 @@ export const UpdateItem = z.object({
   owner: z.string().nullable().optional(),
   due: z.string().nullable().optional(),
   related: lenientArray(id).optional(),
+  rationale: z
+    .string()
+    .nullable()
+    .optional()
+    .describe(
+      "When you change detail: the item's rationale as it now stands, without old values. Omitted, the previous rationale is dropped (it may describe the old version).",
+    ),
   reason: z
     .string()
     .min(3)

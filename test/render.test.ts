@@ -51,7 +51,7 @@ describe("toMarkdown: sections by status", () => {
     expect(log).toMatch(/~~Session store: Memcached~~ \(rejected\)/);
     expect(log).toMatch(/Why: No persistence/);
     // The replacement links back to what it replaced (filtered out of "current" by the eval).
-    expect(md).toMatch(/- Replaces: Session store: Redis/);
+    expect(md).toMatch(/- Replaces an earlier decision/);
   });
 
   it("lists proposals as under discussion, tentative decisions as tentative, open questions and open actions", () => {
@@ -82,9 +82,9 @@ describe("toMermaid / architecture visibility", () => {
   it("draws accepted components and edges", () => {
     const m = toMermaid(arch().state);
     expect(m).toMatch(/^flowchart LR/);
-    expect(m).toContain('cmp_api["Session API"]');
-    expect(m).toContain('cmp_redis[("Redis")]');
-    expect(m).toContain('cmp_api -->|"read sessions"| cmp_redis');
+    expect(m).toContain('n_cmp_api["Session API"]');
+    expect(m).toContain('n_cmp_redis[("Redis")]');
+    expect(m).toContain('n_cmp_api -->|"read sessions"| n_cmp_redis');
   });
 
   it("hides a component and its edges when its only basis is superseded", () => {
@@ -122,9 +122,9 @@ describe("toMermaid / architecture visibility", () => {
       .apply("upsert_component", { id: "cmp-log-store", name: "Log store", type: "datastore", description: "Holds logs; choice open.", basis: ["q-log-store"] })
       .apply("upsert_edge", { from: "cmp-api", to: "cmp-log-store", label: "write logs", basis: ["q-log-store"] });
     const m = toMermaid(h.state);
-    expect(m).toContain('cmp_log_store[("Log store (TBD)")]');
-    expect(m).toContain("class cmp_log_store tbd;");
-    expect(m).toContain('cmp_api -.->|"write logs"| cmp_log_store');
+    expect(m).toContain('n_cmp_log_store[("Log store (TBD)")]');
+    expect(m).toContain("class n_cmp_log_store tbd;");
+    expect(m).toContain('n_cmp_api -.->|"write logs"| n_cmp_log_store');
     expect(toMarkdown(h.state)).toMatch(/- \*\*Log store\*\* \(TBD\): Holds logs/);
     // Resolving the question without a live basis retires it.
     const r = h.apply("update_item", { id: "q-log-store", status: "resolved", reason: "Decided", ts: "00:06:40", quote: "Which region do we deploy to first" });
@@ -139,9 +139,9 @@ describe("toMermaid / architecture visibility", () => {
     expect(toMermaid(h.state)).not.toContain("Kafka");
     expect(toMarkdown(h.state)).not.toMatch(/\*\*Kafka\*\*: Event bus/);
     const draft = toMermaid(h.state, { includeProposed: true });
-    expect(draft).toContain('cmp_kafka[/"Kafka (proposed)"/]');
-    expect(draft).toContain("class cmp_kafka proposed;");
-    expect(draft).toContain('cmp_api -.->|"publish"| cmp_kafka');
+    expect(draft).toContain('n_cmp_kafka[/"Kafka (proposed)"/]');
+    expect(draft).toContain("class n_cmp_kafka proposed;");
+    expect(draft).toContain('n_cmp_api -.->|"publish"| n_cmp_kafka');
   });
 
   it("returns an empty diagram when nothing is live, and omits removed components", () => {

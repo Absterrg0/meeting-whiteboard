@@ -17,13 +17,24 @@ function isLiveBasis(i: Item): boolean {
   return i.kind !== "fact" && LIVE.has(i.status);
 }
 
-export function componentVisibility(state: DocState, c: Component): ComponentVisibility {
-  if (c.removed) return "retired";
-  const basis = c.basis.map((b) => state.items[b]).filter((x): x is Item => !!x);
+/**
+ * Visibility from a basis. If the basis contains decisions, only the decisions count:
+ * a component that exists because of a decision goes away when that decision is
+ * rejected or superseded, even if a requirement it also served is still live.
+ */
+export function basisVisibility(state: DocState, ids: string[]): ComponentVisibility {
+  const all = ids.map((b) => state.items[b]).filter((x): x is Item => !!x);
+  const decisions = all.filter((i) => i.kind === "decision");
+  const basis = decisions.length ? [...decisions, ...all.filter((i) => i.kind === "open_question")] : all;
   if (basis.some(isLiveBasis)) return "active";
   if (basis.some((b) => b.kind === "open_question" && b.status === "open")) return "tbd";
   if (basis.some((b) => b.status === "proposed")) return "proposed";
   return "retired";
+}
+
+export function componentVisibility(state: DocState, c: Component): ComponentVisibility {
+  if (c.removed) return "retired";
+  return basisVisibility(state, c.basis);
 }
 
 export function edgeVisibility(state: DocState, e: Edge): ComponentVisibility {
@@ -34,14 +45,7 @@ export function edgeVisibility(state: DocState, e: Edge): ComponentVisibility {
   const va = componentVisibility(state, a);
   const vb = componentVisibility(state, b);
   if (va === "retired" || vb === "retired") return "retired";
-  const basis = e.basis.map((id) => state.items[id]).filter((x): x is Item => !!x);
-  const own: ComponentVisibility = basis.some(isLiveBasis)
-    ? "active"
-    : basis.some((x) => x.kind === "open_question" && x.status === "open")
-      ? "tbd"
-      : basis.some((x) => x.status === "proposed")
-        ? "proposed"
-        : "retired";
+  const own = basisVisibility(state, e.basis);
   if (own === "retired") return "retired";
   if (va === "proposed" || vb === "proposed" || own === "proposed") return "proposed";
   if (va === "tbd" || vb === "tbd" || own === "tbd") return "tbd";
@@ -49,11 +53,12 @@ export function edgeVisibility(state: DocState, e: Edge): ComponentVisibility {
 }
 
 function mermaidId(id: string): string {
-  return id.replace(/[^a-zA-Z0-9_]/g, "_");
+  // Prefix so an id can never be a Mermaid keyword such as "end".
+  return "n_" + id.replace(/[^a-zA-Z0-9_]/g, "_");
 }
 
 function mermaidText(s: string): string {
-  return s.replace(/"/g, "'").replace(/[<>]/g, "");
+  return s.replace(/"/g, "'").replace(/[<>]/g, "").replace(/[\r\n]+/g, " ");
 }
 
 const SHAPES: Record<Component["type"], [string, string]> = {
@@ -84,8 +89,6 @@ export function toMermaid(state: DocState, opts: { includeProposed?: boolean } =
     const suffix = v === "tbd" ? " (TBD)" : v === "proposed" ? " (proposed)" : "";
     lines.push(`  ${mermaidId(id)}${l}"${mermaidText(c.name + suffix)}"${r}`);
   }
-  let edgeIndex = 0;
-  const dashed: number[] = [];
   for (const id of state.order.edges) {
     const e = state.edges[id]!;
     const v = edgeVisibility(state, e);
@@ -94,8 +97,6 @@ export function toMermaid(state: DocState, opts: { includeProposed?: boolean } =
     const arrow = v === "active" ? "-->" : "-.->";
     const label = e.label ? `|"${mermaidText(e.label)}"|` : "";
     lines.push(`  ${mermaidId(e.from)} ${arrow}${label} ${mermaidId(e.to)}`);
-    if (v !== "active") dashed.push(edgeIndex);
-    edgeIndex++;
   }
   lines.push("  classDef tbd stroke-dasharray: 5 5,stroke:#b7791f,color:#7b5a12,fill:#fffaf0;");
   lines.push("  classDef proposed stroke-dasharray: 3 3,stroke:#999,color:#777,fill:#f4f4f4;");
@@ -169,10 +170,7 @@ export function toMarkdown(state: DocState, opts: RenderOptions = {}): string {
       const tag = d.status === "tentative" ? " (tentative, to revisit)" : "";
       out.push(bullet(d, tag));
       if (d.reason) out.push(`  - Why: ${d.reason}`);
-      for (const sid of d.supersedes) {
-        const s = state.items[sid];
-        if (s) out.push(`  - Replaces: ${s.title}`);
-      }
+      if (d.supersedes.length) out.push(`  - Replaces an earlier decision (see Decision log)`);
     }
     out.push("");
   }

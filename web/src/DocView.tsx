@@ -10,6 +10,11 @@ const md = new Marked({
   gfm: true,
   renderer: {
     html: ({ text }) => escapeHtml(text),
+    // Only plain web links; a javascript: URL in model text must not become clickable.
+    link({ href, text }) {
+      const safe = /^(https?:|mailto:)/i.test(href) ? href : null;
+      return safe ? `<a href="${escapeHtml(safe)}" target="_blank" rel="noopener noreferrer">${text}</a>` : text;
+    },
   },
 });
 

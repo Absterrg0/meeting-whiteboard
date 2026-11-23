@@ -71,7 +71,7 @@ export function App() {
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   }, [expanded]);
-  const clock = useClock(snap, receivedAt, sessionSpeed);
+  const clock = useClock(snap, receivedAt, snap?.speed ?? sessionSpeed);
 
   useEffect(() => {
     api

@@ -56,6 +56,8 @@ export interface Evidence {
   ts: string;
   speaker: string;
   quote: string;
+  /** Transcript index of the quoted utterance (absent for UI edits). */
+  idx?: number;
 }
 
 export interface HistoryEntry {
@@ -89,6 +91,11 @@ export interface Item {
   updatedAt: string;
   /** Set when a human edited the item; the agent should leave it alone unless the discussion revisits it. */
   pinned: boolean;
+  /**
+   * Transcript length at the last human edit. The agent may change a pinned item only
+   * with evidence from an utterance at or after this index (i.e. said after the edit).
+   */
+  pinnedAfterIdx: number | null;
 }
 
 export const COMPONENT_TYPES = [

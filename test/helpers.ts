@@ -27,7 +27,9 @@ export class Harness {
   constructor(public transcript: Utterance[] = TRANSCRIPT) {}
 
   ctx(source: "agent" | "human" = "agent", meetingTime = 600): ApplyContext {
-    return { source, transcript: this.transcript, meetingTime, seq: this.events.length + 1, now: () => "2026-01-01T00:00:00Z" };
+    // A human edit happens at `meetingTime`, so it only "knows" the transcript said by then.
+    const transcript = source === "human" ? this.transcript.filter((u) => u.t <= meetingTime) : this.transcript;
+    return { source, transcript, meetingTime, seq: this.events.length + 1, now: () => "2026-01-01T00:00:00Z" };
   }
 
   try<N extends OpName>(name: N, input: OpInput<N>, source: "agent" | "human" = "agent", meetingTime = 600) {

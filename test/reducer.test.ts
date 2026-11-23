@@ -8,7 +8,7 @@ describe("record_item", () => {
     const h = new Harness().apply("record_item", decision("dec-redis", "proposed", "00:00:30", "What if we used Redis"));
     const it = h.state.items["dec-redis"]!;
     expect(it.status).toBe("proposed");
-    expect(it.evidence).toEqual([{ ts: "00:00:30", speaker: "Ben", quote: "What if we used Redis" }]);
+    expect(it.evidence).toEqual([{ ts: "00:00:30", speaker: "Ben", quote: "What if we used Redis", idx: 1 }]);
     expect(it.pinned).toBe(false);
     expect(h.state.order.items).toEqual(["dec-redis"]);
     expect(h.events[0]!.op).toBe("record_item");
@@ -51,7 +51,7 @@ describe("grounding", () => {
     const before = structuredClone(h.state);
     const r = h.try("record_item", decision("dec-kafka", "accepted", "00:01:30", "we're going with Kafka for everything"));
     expect(r.ok).toBe(false);
-    if (!r.ok) expect(r.error).toMatch(/not found in the transcript/);
+    if (!r.ok) expect(r.error).toMatch(/not found/);
     expect(h.state).toEqual(before);
   });
 
@@ -66,8 +66,10 @@ describe("grounding", () => {
     const g = ground("00:01:20", "we’re going with Redis", TRANSCRIPT);
     expect(g.ok).toBe(true);
     expect(g.utterance!.idx).toBe(3);
-    // Wrong timestamp entirely still finds the line anywhere in the transcript.
-    expect(ground("00:00:01", "migration plan by Friday", TRANSCRIPT).utterance?.idx).toBe(9);
+    // A wrong timestamp is tolerated only for an exact quote of 5+ words.
+    expect(ground("00:00:01", "write the migration plan by Friday", TRANSCRIPT).utterance?.idx).toBe(9);
+    expect(ground("00:00:01", "migration plan by Friday", TRANSCRIPT).ok).toBe(false);
+    expect(ground("00:08:20", "we going", TRANSCRIPT).ok).toBe(false);
     expect(ground("00:00:01", "completely invented sentence here", TRANSCRIPT).ok).toBe(false);
   });
 
@@ -229,12 +231,12 @@ describe("components and edges", () => {
     expect(arch().try("remove_component", { id: "cmp-redis", reason: "gone", ts: "00:05:00", quote: "nobody said this at all" }).ok).toBe(false);
   });
 
-  it("upsert_component on a removed component restores it and merges basis", () => {
+  it("upsert_component on a removed component restores it and replaces its basis", () => {
     const h = arch()
       .apply("remove_component", { id: "cmp-redis", reason: "gone", ts: "00:05:00", quote: "let's drop Redis" })
       .apply("record_item", decision("dec-cache", "accepted", "00:05:30", "Agreed, Postgres for sessions"))
       .apply("upsert_component", { id: "cmp-redis", name: "Redis", type: "datastore", description: "Cache.", basis: ["dec-cache"] });
-    expect(h.state.components["cmp-redis"]).toMatchObject({ removed: false, basis: ["dec-redis", "dec-cache"] });
+    expect(h.state.components["cmp-redis"]).toMatchObject({ removed: false, basis: ["dec-cache"] });
     expect(h.events.at(-1)!.summary).toMatch(/Restored/);
   });
 
@@ -243,5 +245,36 @@ describe("components and edges", () => {
     expect(h.state.edges["cmp-web->cmp-api"]!.removed).toBe(true);
     expect(h.state.edges["cmp-api->cmp-redis"]!.removed).toBe(false);
     expect(h.try("remove_edge", { from: "cmp-web", to: "cmp-api", reason: "again" }).ok).toBe(false);
+  });
+});
+
+describe("rationale on revisions", () => {
+  const base = () =>
+    new Harness().apply(
+      "record_item",
+      decision("dec-ttl", "accepted", "00:01:30", "Sessions expire after 7 days", {
+        detail: "Sessions expire after 7 days.",
+        reason: "7 days matches the mobile app",
+      }),
+    );
+
+  it("drops a rationale that may quote the old value when only the detail changes", () => {
+    const h = base().apply("update_item", { id: "dec-ttl", detail: "Sessions expire after 14 days.", reason: "Changed from 7 to 14 days: customers asked", ts: "00:03:35", quote: "Fine, 14 days" });
+    const it = h.state.items["dec-ttl"]!;
+    expect(it.reason).toBeNull();
+    expect(it.history.at(-1)).toMatchObject({ field: "detail", from: "Sessions expire after 7 days.", reason: "Changed from 7 to 14 days: customers asked" });
+  });
+
+  it("uses the restated rationale when given", () => {
+    const h = base().apply("update_item", { id: "dec-ttl", detail: "Sessions expire after 14 days.", rationale: "Customers asked for longer sessions", reason: "Changed from 7 to 14", ts: "00:03:35", quote: "Fine, 14 days" });
+    expect(h.state.items["dec-ttl"]!.reason).toBe("Customers asked for longer sessions");
+  });
+
+  it("refuses to revive a superseded item in place", () => {
+    const h = base()
+      .apply("record_item", decision("dec-pg", "accepted", "00:05:30", "Agreed, Postgres for sessions"))
+      .apply("supersede_item", { old_id: "dec-ttl", new_id: "dec-pg", reason: "one less system", ts: "00:05:30", quote: "Agreed, Postgres for sessions" });
+    expect(h.try("update_item", { id: "dec-ttl", status: "accepted", reason: "back again", ts: "00:08:20", quote: "Not deciding that today" }).ok).toBe(false);
+    expect(h.try("update_item", { id: "dec-ttl", status: "accepted", reason: "back again" , ts: "", quote: "edited in UI" }, "human").ok).toBe(false);
   });
 });

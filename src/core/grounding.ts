@@ -55,25 +55,30 @@ export interface GroundingResult {
 }
 
 /**
- * Find the utterance the agent is pointing at. Prefer the exact timestamp, then
- * the closest utterances within +/-90s (models sometimes cite a neighbour), then
- * anywhere in the transcript so far.
+ * Find the utterance the agent is pointing at: the closest utterance within +/-90s of the
+ * cited time whose text contains the quote. Short quotes are rejected, and a quote is
+ * accepted elsewhere in the transcript only if it is an exact match of 5+ words.
  */
 export function ground(ts: string, quote: string, transcript: Utterance[]): GroundingResult {
+  if (tokens(quote).length < 3) {
+    return { ok: false, error: `quote "${quote}" is too short; quote at least three words of what was said.` };
+  }
   const t = parseTs(ts);
-  const candidates = [...transcript];
+  // Prefer utterances near the cited time (models sometimes cite a neighbour).
   if (!Number.isNaN(t)) {
-    candidates.sort((a, b) => Math.abs(a.t - t) - Math.abs(b.t - t));
+    const near = transcript
+      .filter((u) => Math.abs(u.t - t) <= 90)
+      .sort((a, b) => Math.abs(a.t - t) - Math.abs(b.t - t));
+    for (const u of near) if (quoteMatches(quote, u.text)) return { ok: true, utterance: u };
   }
-  for (const u of candidates) {
-    if (!Number.isNaN(t) && Math.abs(u.t - t) > 90) break;
-    if (quoteMatches(quote, u.text)) return { ok: true, utterance: u };
-  }
-  for (const u of transcript) {
-    if (quoteMatches(quote, u.text)) return { ok: true, utterance: u };
+  // A wrong timestamp is tolerated only for an exact, distinctive quote (5+ words).
+  if (tokens(quote).length >= 5) {
+    const nq = normalize(quote);
+    const hit = transcript.find((u) => normalize(u.text).includes(nq));
+    if (hit) return { ok: true, utterance: hit };
   }
   return {
     ok: false,
-    error: `quote "${quote}" was not found in the transcript near ${ts}. Quote the speaker's actual words.`,
+    error: `quote "${quote}" was not found in what was said near ${ts}. Cite the right timestamp and quote the speaker's actual words.`,
   };
 }

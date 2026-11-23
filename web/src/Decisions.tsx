@@ -56,7 +56,9 @@ const DEFAULT_STATUS: Record<ItemKind, ItemStatus> = {
   action_item: "open",
 };
 
-const allowed = (i: Item, s: ItemStatus) => ALLOWED_STATUSES[i.kind].includes(s) && i.status !== s;
+// A superseded item can't be revived in place (the reducer refuses it); reversals are new items.
+const allowed = (i: Item, s: ItemStatus) =>
+  i.status !== "superseded" && ALLOWED_STATUSES[i.kind].includes(s) && i.status !== s;
 
 /** The "positive" close for each kind. */
 function acceptAction(i: Item): { status: ItemStatus; label: string } | null {

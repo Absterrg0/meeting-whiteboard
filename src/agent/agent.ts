@@ -5,10 +5,9 @@
  */
 import Anthropic from "@anthropic-ai/sdk";
 import { z } from "zod";
-import { OPS, isOpName, type OpName } from "../core/ops.js";
-import { applyOp } from "../core/reducer.js";
+import { OPS, isOpName, type Op, type OpName } from "../core/ops.js";
 import { componentVisibility, edgeVisibility } from "../core/render.js";
-import type { ChangeEvent, DocState, Utterance } from "../core/types.js";
+import type { DocState, Utterance } from "../core/types.js";
 import { SYSTEM_PROMPT } from "./prompt.js";
 
 export interface AgentConfig {
@@ -63,7 +62,7 @@ const TOOL_DESCRIPTIONS: Record<OpName, string> = {
 
 function toolDefs(): Anthropic.Beta.BetaTool[] {
   const names = Object.keys(OPS) as OpName[];
-  return names.map((name, i) => {
+  return names.map((name) => {
     const schema = z.toJSONSchema(OPS[name], { io: "input" }) as Record<string, unknown>;
     delete schema.$schema;
     const tool: Anthropic.Beta.BetaTool = {
@@ -71,8 +70,6 @@ function toolDefs(): Anthropic.Beta.BetaTool[] {
       description: TOOL_DESCRIPTIONS[name],
       input_schema: schema as Anthropic.Beta.BetaTool.InputSchema,
     };
-    // Cache the stable prefix (tools + system) across batches.
-    if (i === names.length - 1) tool.cache_control = { type: "ephemeral" };
     return tool;
   });
 }
@@ -121,21 +118,28 @@ export function describeState(state: DocState): string {
   return out.join("\n");
 }
 
+/** Applies one operation to the live session state; returns the change summary or the validation error. */
+export type ApplyFn = (op: Op) => { ok: true; summary: string } | { ok: false; error: string };
+
 export interface StepInput {
+  /** State at the start of the step, shown to the model. */
   state: DocState;
   /** Full transcript so far (processed + new). */
   transcript: Utterance[];
-  /** The utterances to process now (a suffix of transcript). */
+  /** The utterances to process now (a suffix of transcript). Empty for a review. */
   fresh: Utterance[];
-  nextSeq: number;
-  meetingTime: number;
   /** "batch": process new lines. "review": end-of-meeting consistency pass over the whole state. */
   mode?: "batch" | "review";
+  /**
+   * Applies each tool call to the session's live state, one at a time. The agent never
+   * owns the state, so a human edit made while the model is thinking is not overwritten:
+   * later agent operations are validated against it (including the pinned-item rule).
+   */
+  apply: ApplyFn;
 }
 
 export interface StepResult {
-  state: DocState;
-  events: ChangeEvent[];
+  applied: number;
   errors: string[];
   note: string;
   usage: Usage;
@@ -177,33 +181,39 @@ export class ScribeAgent {
   }
 
   async step(input: StepInput): Promise<StepResult> {
-    let state = input.state;
-    const events: ChangeEvent[] = [];
+    const state = input.state;
     const errors: string[] = [];
     const usage = emptyUsage();
-    let seq = input.nextSeq;
+    let applied = 0;
 
     const firstFresh = input.fresh[0]?.idx ?? input.transcript.length;
     const context = input.transcript.filter((u) => u.idx < firstFresh).slice(-this.config.contextLines);
 
-    const userText = input.mode === "review" ? reviewPrompt(state, input.transcript) : [
-      "<doc_state>",
-      describeState(state),
-      "</doc_state>",
-      "",
-      "<earlier_transcript note=\"already processed; for context only\">",
-      context.length ? context.map(line).join("\n") : "(start of meeting)",
-      "</earlier_transcript>",
-      "",
-      "<new_transcript>",
-      input.fresh.map(line).join("\n"),
-      "</new_transcript>",
-      "",
-      "Update the doc state for the new transcript lines.",
-    ].join("\n");
+    const userText =
+      input.mode === "review"
+        ? reviewPrompt(state, input.transcript)
+        : [
+            "<doc_state>",
+            describeState(state),
+            "</doc_state>",
+            "",
+            '<earlier_transcript note="already processed; for context only">',
+            context.length ? context.map(line).join("\n") : "(start of meeting)",
+            "</earlier_transcript>",
+            "",
+            "<new_transcript>",
+            input.fresh.map(line).join("\n"),
+            "</new_transcript>",
+            "",
+            "Update the doc state for the new transcript lines.",
+          ].join("\n");
 
-    const messages: Anthropic.Beta.BetaMessageParam[] = [{ role: "user", content: userText }];
+    // Cache the per-step prompt too: correction rounds re-send it.
+    const messages: Anthropic.Beta.BetaMessageParam[] = [
+      { role: "user", content: [{ type: "text", text: userText, cache_control: { type: "ephemeral" } }] },
+    ];
     let note = "";
+    let unresolved = 0;
 
     for (let round = 0; round < this.config.maxRounds; round++) {
       const res = await this.client.beta.messages.create({
@@ -216,7 +226,7 @@ export class ScribeAgent {
         betas: ["server-side-fallback-2026-07-01"],
         fallbacks: "default",
       });
-      addUsage(usage, res.usage, this.config.model);
+      addUsage(usage, res.usage, res.model || this.config.model);
 
       if (res.stop_reason === "refusal") {
         errors.push("model declined this batch");
@@ -233,32 +243,33 @@ export class ScribeAgent {
       if (toolUses.length === 0) break;
 
       messages.push({ role: "assistant", content: res.content as Anthropic.Beta.BetaContentBlockParam[] });
+      const truncated = res.stop_reason === "max_tokens";
       const results: Anthropic.Beta.BetaToolResultBlockParam[] = [];
-      for (const tu of toolUses) {
-        if (!isOpName(tu.name)) {
-          results.push({ type: "tool_result", tool_use_id: tu.id, is_error: true, content: `unknown tool ${tu.name}` });
-          continue;
-        }
-        const r = applyOp(state, { name: tu.name, input: tu.input as never }, {
-          source: "agent",
-          transcript: input.transcript,
-          meetingTime: input.meetingTime,
-          seq,
-        });
+      unresolved = 0;
+      toolUses.forEach((tu, i) => {
+        const fail = (msg: string) => {
+          unresolved++;
+          errors.push(`${tu.name}: ${msg}`);
+          results.push({ type: "tool_result", tool_use_id: tu.id, is_error: true, content: msg });
+        };
+        // The last call of a response cut off by max_tokens may be incomplete: don't run it.
+        if (truncated && i === toolUses.length - 1) return fail("response was truncated; resend this call");
+        if (!isOpName(tu.name)) return fail(`unknown tool ${tu.name}`);
+        const r = input.apply({ name: tu.name, input: tu.input as never });
         if (r.ok) {
-          state = r.state;
-          events.push(r.event);
-          seq++;
-          results.push({ type: "tool_result", tool_use_id: tu.id, content: `ok: ${r.event.summary}` });
+          applied++;
+          results.push({ type: "tool_result", tool_use_id: tu.id, content: `ok: ${r.summary}` });
         } else {
-          errors.push(`${tu.name}: ${r.error}`);
-          results.push({ type: "tool_result", tool_use_id: tu.id, is_error: true, content: r.error });
+          fail(r.error);
         }
-      }
+      });
       messages.push({ role: "user", content: results });
-      if (res.stop_reason !== "tool_use") break;
+      if (res.stop_reason !== "tool_use" && !truncated) break;
+      if (round === this.config.maxRounds - 1 && unresolved > 0) {
+        errors.push(`stopped after ${this.config.maxRounds} rounds with ${unresolved} unresolved error(s)`);
+      }
     }
-    return { state, events, errors, note, usage };
+    return { applied, errors, note, usage };
   }
 }
 

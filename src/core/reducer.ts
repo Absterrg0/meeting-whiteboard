@@ -96,7 +96,7 @@ function evidenceFor(ctx: ApplyContext, ts: string | undefined, quote: string | 
   if (!ts || !quote) fail("ts and quote are required");
   const g = ground(ts, quote, ctx.transcript);
   if (!g.ok || !g.utterance) fail(g.error ?? "quote not found");
-  return { ts: g.utterance.ts, speaker: g.utterance.speaker, quote };
+  return { ts: g.utterance.ts, speaker: g.utterance.speaker, quote, idx: g.utterance.idx };
 }
 
 function getItem(state: DocState, id: string): Item {
@@ -119,16 +119,19 @@ function checkStatus(kind: Item["kind"], status: Item["status"]) {
  * A human edit pins an item. The agent may still change it, but only based on
  * something said after the human edit (i.e. the team revisited it).
  */
-function checkPinned(item: Item, ctx: ApplyContext, evidenceTs: string) {
-  if (ctx.source !== "agent" || !item.pinned) return;
-  const lastHuman = [...item.history].reverse().find((h) => h.source === "human");
-  // Items created in the UI have no human history entry; their creation time is the pin.
-  const pinnedAt = lastHuman?.ts ?? item.createdAt;
-  if (parseTs(evidenceTs) <= parseTs(pinnedAt)) {
+function checkPinned(item: Item, ctx: ApplyContext, ev: Evidence) {
+  if (ctx.source !== "agent" || !item.pinned || item.pinnedAfterIdx === null) return;
+  if ((ev.idx ?? -1) < item.pinnedAfterIdx) {
     fail(
-      `item '${item.id}' was set by a human at ${pinnedAt}; only change it if the discussion revisits it after that`,
+      `item '${item.id}' was set by a human after the line at index ${item.pinnedAfterIdx - 1}; only change it if the discussion revisits it after that`,
     );
   }
+}
+
+function pin(item: Item, ctx: ApplyContext) {
+  if (ctx.source !== "human") return;
+  item.pinned = true;
+  item.pinnedAfterIdx = ctx.transcript.length;
 }
 
 const recordItem: Handler<RecordItem> = (state, input, ctx) => {
@@ -153,8 +156,10 @@ const recordItem: Handler<RecordItem> = (state, input, ctx) => {
     history: [],
     createdAt: ev.ts,
     updatedAt: ev.ts,
-    pinned: ctx.source === "human",
+    pinned: false,
+    pinnedAfterIdx: null,
   };
+  pin(item, ctx);
   if (input.revised_from) {
     item.history.push({
       ts: ev.ts,
@@ -180,11 +185,17 @@ const recordItem: Handler<RecordItem> = (state, input, ctx) => {
 const updateItem: Handler<UpdateItem> = (state, input, ctx) => {
   const item = getItem(state, input.id);
   const ev = evidenceFor(ctx, input.ts, input.quote);
-  checkPinned(item, ctx, ev.ts);
+  checkPinned(item, ctx, ev);
   if (input.status === "superseded") fail("use supersede_item to supersede an item");
   if (input.status) checkStatus(item.kind, input.status);
   checkRelated(state, input.related);
-  if (ctx.source === "agent" && item.status === "superseded" && input.status === undefined) {
+  if (item.status === "superseded" && input.status !== undefined) {
+    // Reviving a superseded item would leave both old and new values "decided".
+    fail(
+      `'${item.id}' was superseded by '${item.supersededBy}'; to go back to it, record the reversal as a new item and supersede '${item.supersededBy}'`,
+    );
+  }
+  if (ctx.source === "agent" && item.status === "superseded") {
     fail(`item '${item.id}' is superseded by '${item.supersededBy}'; update that item instead`);
   }
 
@@ -208,21 +219,26 @@ const updateItem: Handler<UpdateItem> = (state, input, ctx) => {
   if (input.related) item.related = [...new Set([...item.related, ...input.related])];
   if (changes.length === 0 && !input.related) fail(`update_item on '${item.id}' changes nothing`);
 
-  // The item's reason is the team's rationale. A UI edit is recorded in history with its
-  // own reason but does not replace the rationale unless there was none.
+  // item.reason is the rationale shown in the doc. A status change (accept, reject,
+  // resolve...) carries the rationale for the new status. A revised detail replaces the
+  // rationale with the one given, or drops it: an old rationale may quote the old value.
+  // The change reason itself always goes to history and the changelog.
+  const statusChanged = changes.some((c) => c.field === "status");
+  const detailChanged = changes.some((c) => c.field === "detail");
   if (ctx.source === "human") {
-    if (!item.reason && input.reason !== "edited in UI") item.reason = input.reason;
-  } else if (changes.some((c) => c.field === "status")) {
-    // A status change (accept, reject, resolve...) carries the rationale for the new status.
+    if (input.rationale !== undefined) item.reason = input.rationale;
+    else if (!item.reason && input.reason !== "edited in UI") item.reason = input.reason;
+  } else if (input.rationale !== undefined) {
+    item.reason = input.rationale;
+  } else if (statusChanged) {
     item.reason = input.reason;
+  } else if (detailChanged) {
+    item.reason = null;
   }
-  // A revision of the detail alone keeps the item's rationale: the change reason
-  // ("moved from 12 to 32 partitions because...") lives in history and the changelog,
-  // so it cannot reintroduce the old value into the current doc.
   item.history.push(...changes);
   item.evidence.push(ev);
   item.updatedAt = ev.ts;
-  if (ctx.source === "human") item.pinned = true;
+  pin(item, ctx);
 
   const parts = changes.map((c) =>
     c.field === "detail" ? `detail: "${c.from}" → "${c.to}"` : `${c.field}: ${c.from ?? "—"} → ${c.to ?? "—"}`,
@@ -239,7 +255,7 @@ const supersedeItem: Handler<SupersedeItem> = (state, input, ctx) => {
   const oldItem = getItem(state, input.old_id);
   const newItem = getItem(state, input.new_id);
   const ev = evidenceFor(ctx, input.ts, input.quote);
-  checkPinned(oldItem, ctx, ev.ts);
+  checkPinned(oldItem, ctx, ev);
   if (oldItem.status === "superseded") fail(`'${oldItem.id}' is already superseded by '${oldItem.supersededBy}'`);
   if (oldItem.status === "rejected") fail(`'${oldItem.id}' was rejected; it cannot also be superseded`);
   if (!["accepted", "tentative", "open"].includes(newItem.status)) {
@@ -262,7 +278,7 @@ const supersedeItem: Handler<SupersedeItem> = (state, input, ctx) => {
   oldItem.evidence.push(ev);
   oldItem.updatedAt = ev.ts;
   if (!newItem.supersedes.includes(oldItem.id)) newItem.supersedes.push(oldItem.id);
-  if (ctx.source === "human") oldItem.pinned = true;
+  pin(oldItem, ctx);
   return {
     ts: ev.ts,
     targets: [oldItem.id, newItem.id],
@@ -280,7 +296,7 @@ const upsertComponent: Handler<UpsertComponent> = (state, input, ctx) => {
       name: input.name,
       type: input.type,
       description: input.description,
-      basis: [...new Set([...existing.basis, ...input.basis])],
+      basis: [...new Set(input.basis)],
       removed: false,
       removedReason: null,
       updatedAt: ts,
@@ -336,7 +352,7 @@ const upsertEdge: Handler<UpsertEdge> = (state, input, ctx) => {
   if (existing) {
     Object.assign(existing, {
       label: input.label,
-      basis: [...new Set([...existing.basis, ...input.basis])],
+      basis: [...new Set(input.basis)],
       removed: false,
       updatedAt: ts,
     });

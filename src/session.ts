@@ -88,6 +88,7 @@ export class MeetingSession extends EventEmitter {
   private drainWaiters: (() => void)[] = [];
   private idleWaiters: (() => void)[] = [];
   private failures = 0;
+  private disposed = false;
   private finishing = false;
   private finished: Promise<void> = Promise.resolve();
   reviewOnFinish = true;
@@ -234,6 +235,7 @@ export class MeetingSession extends EventEmitter {
   }
 
   dispose() {
+    this.disposed = true;
     this.stopTimers();
     if (this.ticker) clearInterval(this.ticker);
     this.ticker = null;
@@ -252,7 +254,7 @@ export class MeetingSession extends EventEmitter {
   }
 
   private schedule() {
-    if (this.agentBusy) return;
+    if (this.agentBusy || this.disposed) return;
     if (!this.shouldFlush()) {
       if (this.transcript.length === this.processed) this.resolveDrain();
       this.resolveIdle();
@@ -285,73 +287,75 @@ export class MeetingSession extends EventEmitter {
     for (const r of w) r();
   }
 
-  private async runBatch() {
-    this.agentBusy = true;
+  private runBatch() {
     this.forceFlush = false;
-    const fresh = this.transcript.slice(this.processed);
+    return this.runAgent("batch");
+  }
+
+  private runReview() {
+    return this.runAgent("review");
+  }
+
+  /**
+   * One agent step. Tool calls are applied to the live state one by one (via `apply`),
+   * so the UI updates as the agent works and a concurrent human edit is never lost.
+   */
+  private async runAgent(mode: "batch" | "review") {
+    if (this.disposed) return;
+    this.agentBusy = true;
+    const fresh = mode === "batch" ? this.transcript.slice(this.processed) : [];
     const upTo = this.transcript.length;
+    const transcript = this.transcript.slice(0, upTo);
+    const meetingTime = transcript.at(-1)?.t ?? 0;
+    const label = mode === "batch" ? `${fresh[0]?.ts}–${fresh.at(-1)?.ts}` : "End-of-meeting review";
     this.changed();
     try {
       const result = await this.agent.step({
         state: this.state,
-        transcript: this.transcript.slice(0, upTo),
+        transcript,
         fresh,
-        nextSeq: this.events.length + 1,
-        meetingTime: fresh.at(-1)!.t,
+        mode,
+        apply: (op) => {
+          if (this.disposed) return { ok: false, error: "session closed" };
+          const r = applyOp(this.state, op, {
+            source: "agent",
+            transcript,
+            meetingTime,
+            seq: this.events.length + 1,
+          });
+          if (!r.ok) return r;
+          this.state = r.state;
+          this.events.push(r.event);
+          this.persist([r.event]);
+          this.changed();
+          return { ok: true, summary: r.event.summary };
+        },
       });
-      this.state = result.state;
-      this.events.push(...result.events);
       this.usage = mergeUsage(this.usage, result.usage);
-      this.processed = upTo;
-      this.addLog(
-        "batch",
-        `${fresh[0]!.ts}–${fresh.at(-1)!.ts}: ${result.events.length} change(s). ${result.note}`.trim(),
-      );
+      if (mode === "batch") this.processed = upTo;
+      this.addLog("batch", `${label}: ${result.applied} change(s). ${result.note}`.trim());
       for (const e of result.errors) this.addLog("error", e);
-      this.persist(result.events);
       this.failures = 0;
     } catch (err) {
-      // Leave the lines unprocessed so they are retried with the next batch;
-      // after repeated failures skip them rather than stall the meeting.
-      this.failures++;
-      this.addLog("error", `agent call failed (${this.failures}x): ${(err as Error).message}`);
-      if (this.failures >= 3) {
-        this.addLog("error", `skipping ${fresh.length} line(s) after repeated failures`);
-        this.processed = upTo;
-        this.failures = 0;
-      } else {
-        await new Promise((r) => setTimeout(r, 2000 * this.failures));
+      this.addLog("error", `${label}: agent call failed: ${(err as Error).message}`);
+      if (mode === "batch") {
+        // Leave the lines unprocessed and retry them; after repeated failures skip them
+        // (logged) rather than stall the meeting.
+        this.failures++;
+        if (this.failures >= 3) {
+          this.addLog("error", `skipping ${fresh.length} line(s) after ${this.failures} failed attempts`);
+          this.processed = upTo;
+          this.failures = 0;
+        } else {
+          await new Promise((r) => setTimeout(r, 2000 * this.failures));
+          // Retry even if the batch policy would not flush again (e.g. the clock has stopped).
+          this.forceFlush = true;
+        }
       }
     } finally {
       this.agentBusy = false;
       this.changed();
       this.schedule();
-    }
-  }
-
-  private async runReview() {
-    this.agentBusy = true;
-    this.changed();
-    try {
-      const result = await this.agent.step({
-        state: this.state,
-        transcript: this.transcript,
-        fresh: [],
-        nextSeq: this.events.length + 1,
-        meetingTime: this.transcript.at(-1)!.t,
-        mode: "review",
-      });
-      this.state = result.state;
-      this.events.push(...result.events);
-      this.usage = mergeUsage(this.usage, result.usage);
-      this.addLog("batch", `End-of-meeting review: ${result.events.length} change(s). ${result.note}`.trim());
-      for (const e of result.errors) this.addLog("error", e);
-      this.persist(result.events);
-    } catch (err) {
-      this.addLog("error", `review failed: ${(err as Error).message}`);
-    } finally {
-      this.agentBusy = false;
-      this.changed();
     }
   }
 

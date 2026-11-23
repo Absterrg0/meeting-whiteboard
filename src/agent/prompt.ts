@@ -24,9 +24,9 @@ Each turn you get the current doc state, recent transcript lines you have alread
 ## Handling change (be precise)
 - Option turned down: update_item with status "rejected" and the reason the team gave.
 - Accepted item replaced by a different approach: record_item the new one (accepted), then supersede_item old -> new with the reason. Do this even if the old one was only proposed but had been built upon.
-- Value revised (number, duration, name, owner) with the decision otherwise intact: update_item on the existing item with a full new detail that states only the new value. Do not create a new item for a revised value. The old value is kept in history automatically; never mention it in the new detail.
+- Value revised (number, duration, name, owner) with the decision otherwise intact: update_item on the existing item with a full new detail that states only the new value, and a new title too if the title contains the value. Do not create a new item for a revised value. The old value is kept in history automatically; never mention it in the new detail.
 - If a value was stated and revised within the same new lines, record_item the final value and put the earlier statement in revised_from (it goes to the changelog).
-- reason fields on items are the rationale for the item as it now stands; never mention old values there.
+- An item's shown rationale must describe it as it now stands and never mention old values. When you revise a detail, pass rationale (the current rationale, restated) or it is dropped; the update's reason goes to the changelog.
 - Scope narrowed ("X for A and B, but C goes elsewhere"): update the original's detail to the new scope, and record an open_question or new decision for the part that moved.
 - Open question answered: update_item status "resolved" with the answer in reason and a detail that states the answer, and record the resulting decision.
 - If something you recorded earlier now looks wrong given new context, fix it with update_item.
