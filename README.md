@@ -173,6 +173,11 @@ The checks that still fail are mostly subtle. An action item someone declined is
 ## What I would do next
 
 - **Speaker detection for raw audio**: chunked diarization with `gpt-4o-transcribe-diarize`, with short reference clips per participant so the labels stay consistent across chunks.
+- **A fast decision layer** (e.g. TypeSafe AI's Jev, a "System 1" model that picks among given options in about 0.2 s at a fraction of LLM cost):
+  - Use it for the routing calls: "does this line change the doc: none / proposal / agreement / rejection / reversal / revision / question / action?" and "which existing topic?".
+  - With high confidence, chatter skips the scribe entirely, which is a big saving on long meetings, and a pure status flip ("works for me" → accept the open proposal) is applied without an LLM.
+  - The LLM keeps the writing; the reducer and guards stay unchanged.
+  - Not done tonight. It needs its own benchmark, because published evaluations say these models judge options by name and struggle with what several records imply together, which is exactly our reversal case.
 - **A review queue**: low-confidence changes are already flagged "to confirm"; next is to hold them out of the doc until confirmed when a team wants that.
 - **Diagram stability**: give the editor a canonical component inventory carried between meetings, and vote over two editor samples on borderline edges.
 - **Multi-meeting docs**: load a previous meeting's state as the baseline the next meeting revises.
