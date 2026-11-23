@@ -5,25 +5,28 @@
  *   pnpm start  -> builds the web app into dist/ and serves it from here
  *
  * One meeting session is active at a time; creating a new one disposes the old one.
- * The UI receives full snapshots over SSE (they are small) and sends human edits back
- * as the same operations the agent uses.
+ * The UI receives one full snapshot over SSE when it connects, then small deltas (new
+ * transcript lines, new change events, the state when it changed; see src/wire.ts), and
+ * sends human edits back as the same operations the agent uses.
  */
 import "dotenv/config";
-import { existsSync, readdirSync, readFileSync } from "node:fs";
+import { appendFileSync, existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { basename, join, resolve } from "node:path";
 import { serve } from "@hono/node-server";
 import { serveStatic } from "@hono/node-server/serve-static";
 import { Hono } from "hono";
 import { streamSSE } from "hono/streaming";
+import { emptyUsage, type AgentRuntime } from "./agent/index.js";
 import { isOpName, type Op } from "./core/ops.js";
-import { formatTs } from "./core/types.js";
+import { formatTs, type ChangeEvent, type ChangeKind, type DocState, type Utterance } from "./core/types.js";
 import { parseTranscriptDetailed, TranscriptParseError, type ParseResult } from "./ingest/transcript.js";
 import { attachAudioRelay } from "./live/audioRelay.js";
 import { apiGuard } from "./live/guard.js";
 import { WEBHOOK_PATH } from "./live/recall.js";
 import { registerLiveRoutes } from "./live/routes.js";
 import { ensurePublicUrl, stopTunnel } from "./live/tunnel.js";
-import { MeetingSession } from "./session.js";
+import { MeetingSession, percentile } from "./session.js";
+import type { LiveDelta, LiveHeader, LiveSnapshot, SavedSessionInfo } from "./wire.js";
 
 const ROOT = process.cwd();
 const TRANSCRIPTS_DIR = resolve(ROOT, "transcripts");
@@ -33,6 +36,8 @@ const PORT = Number(process.env.PORT ?? 8787);
 const TRANSCRIPT_EXT = /\.(jsonl|json|txt|md|vtt|srt)$/i;
 
 const sessions = new Map<string, MeetingSession>();
+/** Per-session facts the session itself does not keep. */
+const sessionMeta = new Map<string, { createdAt: number; readOnly: boolean }>();
 
 function listTranscripts(): { name: string; utterances: number }[] {
   if (!existsSync(TRANSCRIPTS_DIR)) return [];
@@ -66,6 +71,7 @@ function disposeAll() {
   for (const [id, old] of sessions) {
     old.dispose();
     sessions.delete(id);
+    sessionMeta.delete(id);
   }
 }
 
@@ -75,8 +81,172 @@ function newSession(title: string, live: boolean): MeetingSession {
   const id = `${slug}-${Date.now()}`;
   const session = new MeetingSession({ id, outDir: OUT_DIR, title: title || "Live meeting" });
   sessions.set(id, session);
+  sessionMeta.set(id, { createdAt: Date.now(), readOnly: false });
+  // Keep the transcript next to state.json / events.jsonl so a past session can be reopened.
+  const transcriptFile = join(OUT_DIR, id, "transcript.jsonl");
+  session.on("utterance", (u: Utterance) => {
+    try {
+      appendFileSync(transcriptFile, JSON.stringify({ time: u.ts, speaker: u.speaker, text: u.text }) + "\n");
+    } catch {
+      /* best effort */
+    }
+  });
   if (live) session.startLive();
   return session;
+}
+
+// ---------- saved sessions (out/<id>/), opened for viewing ----------
+
+/** An agent that never calls a model: a reopened session is a fixed record. */
+const NO_AGENT: AgentRuntime = {
+  config: { model: "saved session" },
+  step: async () => ({ applied: 0, errors: [], note: "", usage: emptyUsage() }),
+};
+
+function savedDir(name: string): string | null {
+  if (basename(name) !== name || name.startsWith(".")) return null;
+  const dir = join(OUT_DIR, name);
+  return existsSync(join(dir, "state.json")) ? dir : null;
+}
+
+/** The transcript a saved session ran on: its own copy, else the transcripts/ file its name points at. */
+function savedTranscript(name: string, dir: string): Utterance[] {
+  const own = join(dir, "transcript.jsonl");
+  const candidates = [own];
+  const base = name.replace(/^eval-/, "").replace(/-(\d{13}|\d{4}-\d{2}-\d{2}T[\d-]+Z(-r\d+)?)$/, "");
+  for (const ext of [".jsonl", ".json", ".txt", ".vtt", ".srt", ".md"]) candidates.push(join(TRANSCRIPTS_DIR, base + ext));
+  for (const f of candidates) {
+    if (!existsSync(f)) continue;
+    try {
+      return parseTranscriptDetailed(readFileSync(f, "utf8")).utterances;
+    } catch {
+      /* try the next */
+    }
+  }
+  return [];
+}
+
+/** Saved states may predate topics / confidence / event kinds. */
+function normalizeState(raw: DocState): DocState {
+  const s = raw as DocState & Partial<Pick<DocState, "topics">>;
+  const items = Object.fromEntries(
+    Object.entries(s.items ?? {}).map(([id, i]) => [id, { ...i, topic: i.topic ?? null, confidence: i.confidence ?? "high" }]),
+  );
+  return {
+    ...s,
+    topics: s.topics ?? {},
+    items,
+    order: { ...s.order, topics: s.order?.topics ?? [] },
+  };
+}
+
+function inferKind(e: ChangeEvent): ChangeKind {
+  if (e.kind) return e.kind;
+  const input = (e.input ?? {}) as { kind?: string; status?: string; detail?: string };
+  switch (e.op) {
+    case "supersede_item":
+      return "replaced";
+    case "confirm_item":
+      return "confirmed";
+    case "set_meeting_info":
+    case "upsert_topic":
+      return "noted";
+    case "upsert_component":
+    case "remove_component":
+    case "upsert_edge":
+    case "remove_edge":
+    case "set_overview":
+      return "diagram";
+    case "record_item":
+      if (input.kind === "action_item") return "action";
+      if (input.kind === "open_question") return "opened";
+      if (input.kind === "decision") return input.status === "proposed" ? "proposed" : input.status === "rejected" ? "rejected" : "decided";
+      return "noted";
+    case "update_item":
+      if (input.status === "rejected") return "rejected";
+      if (input.status === "resolved") return "resolved";
+      if (input.status === "accepted" || input.status === "tentative") return "decided";
+      return "revised";
+    default:
+      return "other";
+  }
+}
+
+function listSaved(): SavedSessionInfo[] {
+  if (!existsSync(OUT_DIR)) return [];
+  const out: SavedSessionInfo[] = [];
+  for (const name of readdirSync(OUT_DIR)) {
+    const dir = savedDir(name);
+    if (!dir) continue;
+    try {
+      const st = statSync(join(dir, "state.json"));
+      const state = normalizeState(JSON.parse(readFileSync(join(dir, "state.json"), "utf8")) as DocState);
+      const own = join(dir, "transcript.jsonl");
+      out.push({
+        name,
+        title: state.meeting?.title || name,
+        items: Object.keys(state.items).length,
+        topics: Object.keys(state.topics).length,
+        components: Object.keys(state.components ?? {}).length,
+        lines: existsSync(own) ? readFileSync(own, "utf8").split("\n").filter(Boolean).length : -1,
+        modifiedAt: st.mtime.toISOString(),
+      });
+    } catch {
+      /* unreadable: skip */
+    }
+  }
+  return out.sort((a, b) => (a.modifiedAt < b.modifiedAt ? 1 : -1)).slice(0, 60);
+}
+
+async function openSaved(name: string): Promise<MeetingSession | null> {
+  const dir = savedDir(name);
+  if (!dir) return null;
+  const state = normalizeState(JSON.parse(readFileSync(join(dir, "state.json"), "utf8")) as DocState);
+  const eventsFile = join(dir, "events.jsonl");
+  const events: ChangeEvent[] = existsSync(eventsFile)
+    ? readFileSync(eventsFile, "utf8")
+        .split("\n")
+        .filter(Boolean)
+        .map((l) => JSON.parse(l) as ChangeEvent)
+        .map((e) => ({ ...e, kind: inferKind(e) }))
+    : [];
+  disposeAll();
+  const id = `saved-${name}`.slice(0, 120);
+  const s = new MeetingSession({ id, title: state.meeting.title || name, agent: NO_AGENT, manual: true, reviewOnFinish: false });
+  s.transcript = savedTranscript(name, dir);
+  s.state = state;
+  s.events = events;
+  sessions.set(id, s);
+  sessionMeta.set(id, { createdAt: statSync(join(dir, "state.json")).mtimeMs, readOnly: true });
+  await s.finish(); // marks every line processed (the no-op agent) and stops the clock
+  return s;
+}
+
+// ---------- what the UI receives ----------
+
+function liveHeader(s: MeetingSession): LiveHeader {
+  const meta = sessionMeta.get(s.id);
+  return {
+    id: s.id,
+    title: s.title,
+    status: s.status,
+    agentBusy: s.agentBusy,
+    editorBusy: s.editorBusy,
+    meetingTime: formatTs(s.meetingTime()),
+    mode: s.mode,
+    speed: s.speed,
+    processedCount: s.transcript.length - s.pendingCount(),
+    usage: s.usage,
+    model: s.agent.config.model,
+    editorModel: s.agent.config.editorModel ?? s.agent.config.model,
+    latency: { p50: percentile(s.metrics.lineLatency, 50), p90: percentile(s.metrics.lineLatency, 90) },
+    readOnly: meta?.readOnly ?? false,
+    createdAt: meta?.createdAt ?? Date.now(),
+  };
+}
+
+function liveSnapshot(s: MeetingSession): LiveSnapshot {
+  return { ...liveHeader(s), transcript: s.transcript, state: s.state, events: s.events, log: s.log.slice(-200) };
 }
 
 async function readJson<T>(req: Request): Promise<Partial<T>> {
@@ -113,6 +283,16 @@ app.post("/api/transcript/parse", async (c) => {
     if (e instanceof TranscriptParseError) return c.json({ error: e.message }, 400);
     throw e;
   }
+});
+
+/** Saved sessions in out/ (development and review: open a past meeting without spending API). */
+app.get("/api/saved", (c) => c.json(listSaved()));
+
+app.post("/api/saved/open", async (c) => {
+  const body = await readJson<{ name: string }>(c.req.raw);
+  const s = await openSaved(String(body.name ?? ""));
+  if (!s) return c.json({ error: `no saved session '${body.name}'` }, 404);
+  return c.json({ id: s.id });
 });
 
 /** The active session, so a reloaded page can reattach. */
@@ -264,22 +444,53 @@ app.get("/api/session/:id/events", (c) => {
     let pending: NodeJS.Timeout | null = null;
     let eventId = 0;
     const MIN_GAP_MS = 250;
+    // What this client already has.
+    let sentState: DocState | null = null;
+    let sentLines = 0;
+    let sentEvents = 0;
+    let sentLog = 0;
 
-    const send = async () => {
-      pending = null;
-      if (closed) return;
-      lastSent = Date.now();
+    const write = async (event: string, data: unknown) => {
       try {
-        await stream.writeSSE({ event: "snapshot", id: String(++eventId), data: JSON.stringify(s.snapshot()) });
+        await stream.writeSSE({ event, id: String(++eventId), data: JSON.stringify(data) });
       } catch {
         closed = true;
       }
+    };
+    const sendFull = async () => {
+      const snap = liveSnapshot(s);
+      sentState = s.state;
+      sentLines = s.transcript.length;
+      sentEvents = s.events.length;
+      sentLog = s.log.length;
+      lastSent = Date.now();
+      await write("full", snap);
+    };
+    const sendDelta = async () => {
+      pending = null;
+      if (closed) return;
+      lastSent = Date.now();
+      const delta: LiveDelta = {
+        ...liveHeader(s),
+        state: s.state !== sentState ? s.state : undefined,
+        transcriptFrom: sentLines,
+        transcript: s.transcript.slice(sentLines),
+        eventsFrom: sentEvents,
+        events: s.events.slice(sentEvents),
+        logFrom: sentLog,
+        log: s.log.slice(sentLog),
+      };
+      sentState = s.state;
+      sentLines = s.transcript.length;
+      sentEvents = s.events.length;
+      sentLog = s.log.length;
+      await write("delta", delta);
     };
     // Throttle with a trailing send so the last change is always delivered.
     const onChange = () => {
       if (closed || pending) return;
       const wait = Math.max(0, MIN_GAP_MS - (Date.now() - lastSent));
-      pending = setTimeout(() => void send(), wait);
+      pending = setTimeout(() => void sendDelta(), wait);
     };
     s.on("change", onChange);
     const heartbeat = setInterval(() => {
@@ -305,7 +516,7 @@ app.get("/api/session/:id/events", (c) => {
         if (closed || sessions.get(s.id) !== s) cleanup();
       }, 1000);
       stream.onAbort(cleanup);
-      void send();
+      void sendFull();
     });
   });
 });

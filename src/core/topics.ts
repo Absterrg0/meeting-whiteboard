@@ -103,6 +103,8 @@ export function meetingWide(state: DocState) {
     facts: items.filter((i) => i.kind === "fact" && i.status === "accepted"),
     decisions: items.filter((i) => i.kind === "decision" && isLive(i)),
     proposals: items.filter((i) => i.kind === "decision" && i.status === "proposed"),
+    rejected: items.filter((i) => i.kind === "decision" && i.status === "rejected"),
+    replaced: items.filter((i) => i.kind === "decision" && i.status === "superseded"),
     questions: items.filter((i) => i.kind === "open_question" && i.status === "open"),
     actions: items.filter((i) => i.kind === "action_item" && i.status === "open"),
   };

@@ -46,9 +46,8 @@ describe("toMarkdown: sections by status", () => {
     expect(current).toMatch(/Session store: Postgres/);
     expect(current).not.toMatch(/Memcached/);
     expect(current).not.toMatch(/Session store: Redis/);
-    const log = md.slice(md.indexOf("## Decision log"));
-    expect(log).toMatch(/\*\*Session store: Redis\*\*: superseded by "Session store: Postgres" at 00:05:00: One less system\./);
-    expect(log).toMatch(/\*\*Session store: Memcached\*\*: rejected at 00:01:00: No persistence\./);
+    expect(md).toMatch(/- Replaced: ~~Session store: Redis~~ by "Session store: Postgres" at 00:05:00: One less system\./);
+    expect(md).toMatch(/- Considered: ~~Session store: Memcached~~, rejected at 00:01:00: No persistence\./);
   });
 
   it("lists proposals as under discussion, tentative decisions as tentative, open questions and open actions", () => {
@@ -58,8 +57,8 @@ describe("toMarkdown: sections by status", () => {
       .apply("record_item", { id: "q-region", kind: "open_question", title: "First region", detail: "Which region first.", status: "open", ts: "00:06:40", quote: "Which region do we deploy to first" })
       .apply("record_item", { id: "act-plan", kind: "action_item", title: "Migration plan", detail: "Write the migration plan.", status: "open", owner: "Cara", due: "Friday", ts: "00:08:20", quote: "migration plan by Friday" });
     const md = toMarkdown(h.state);
-    expect(md).toMatch(/## Under discussion \(not decided\)\n\n- \*\*Redis sessions\*\*/);
-    expect(md).toMatch(/\*\*Session lifetime\*\* _\(tentative\)_/);
+    expect(md).toMatch(/- Proposed: \*\*Redis sessions\*\*/);
+    expect(md).toMatch(/- \*\*Session lifetime\*\* _\(tentative\)_/);
     expect(md).toMatch(/> \*\*Status:\*\* 1 decision \(1 tentative\) · 1 open question · 1 action item/);
     expect(md).toMatch(/## Open questions\n\n- \*\*First region\*\*/);
     expect(md).toMatch(/\| Cara \| Write the migration plan\. \| Friday \| 00:08:20 \|/);

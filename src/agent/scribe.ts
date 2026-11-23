@@ -26,7 +26,7 @@ import {
   type ModelRef,
   type Usage,
 } from "./llm.js";
-import { REVIEW_INSTRUCTIONS, SCRIBE_PROMPT } from "./prompt.js";
+import { CONSOLIDATE_INSTRUCTIONS, REVIEW_INSTRUCTIONS, SCRIBE_PROMPT } from "./prompt.js";
 
 /** Applies one operation to the live session state; returns its summary or the validation error. */
 export type ApplyFn = (op: Op) => { ok: true; summary: string } | { ok: false; error: string };
@@ -38,8 +38,13 @@ export interface StepInput {
   transcript: Utterance[];
   /** New lines to process now (a suffix of transcript). Empty for a review. */
   fresh: Utterance[];
-  /** "batch": process new lines. "review": end-of-meeting consistency pass. */
-  mode?: "batch" | "review";
+  /**
+   * "batch": process new lines. "consolidate": periodic consistency pass over the recent
+   * part of the meeting. "review": end-of-meeting pass over the whole meeting.
+   */
+  mode?: "batch" | "consolidate" | "review";
+  /** For "consolidate": how far back to look (meeting seconds). */
+  windowSec?: number;
   /** Changes made outside this conversation since its last turn (human edits, review), one line each. */
   notices?: string[];
   apply: ApplyFn;
@@ -66,43 +71,56 @@ export interface ScribeConfig {
   contextLines: number;
 }
 
-const SCRIBE_TOOLS = ["set_meeting_info", "record_item", "update_item", "supersede_item"] as const;
+const SCRIBE_TOOLS = ["set_meeting_info", "upsert_topic", "record_item", "update_item", "supersede_item", "confirm_item"] as const;
 
 const TOOL_DESCRIPTIONS: Record<(typeof SCRIBE_TOOLS)[number], string> = {
   set_meeting_info: "Set the design doc's title and a one-sentence context (what is being designed and why).",
+  upsert_topic: "Create a topic (one question the meeting works on) or rename it. Items are filed under topics.",
+  confirm_item: "Mark a low-confidence item as confirmed, when later discussion makes it clear.",
   record_item:
     "Create an item: requirement, non_goal, fact, decision (including proposals and turned-down options), open_question or action_item.",
   update_item:
     "Change an existing item: status (accept, reject, resolve, drop, mark tentative), detail (revised values, narrowed scope), title, owner or due. Always give the reason.",
   supersede_item:
-    "Mark an existing item as replaced by another item (record the replacement first). Use when the team reverses or replaces an earlier choice.",
+    "Replace a topic's current answer: the old item becomes superseded and the replacement (recorded first, usually as proposed) becomes the live answer. Use when the team reverses or replaces an earlier choice.",
 };
 
 function line(u: Utterance): string {
   return `[${u.ts}] ${u.speaker}: ${u.text}`;
 }
 
-/** Compact, model-readable view of the items (the scribe does not see the diagram). */
+function itemLine(i: DocState["items"][string]): string {
+  const extra = [
+    i.owner ? `owner=${i.owner}` : "",
+    i.due ? `due=${i.due}` : "",
+    i.supersededBy ? `superseded_by=${i.supersededBy}` : "",
+    i.reason ? `rationale=${i.reason}` : "",
+    i.confidence === "low" ? "LOW-CONFIDENCE" : "",
+    i.pinned ? "HUMAN-EDITED" : "",
+    `since=${i.evidence[0]?.ts ?? "?"}`,
+  ]
+    .filter(Boolean)
+    .join(", ");
+  return `  - ${i.id} | ${i.kind} | ${i.status} | ${i.title} — ${i.detail} (${extra})`;
+}
+
+/** Compact, model-readable view of topics and items (the scribe does not see the diagram). */
 export function describeItems(state: DocState): string {
   const out: string[] = [];
   out.push(`Title: ${state.meeting.title || "(not set)"}`);
   if (state.meeting.context) out.push(`Context: ${state.meeting.context}`);
-  out.push("ITEMS (id | kind | status | title — detail):");
-  if (state.order.items.length === 0) out.push("(none yet)");
-  for (const id of state.order.items) {
-    const i = state.items[id]!;
-    const extra = [
-      i.owner ? `owner=${i.owner}` : "",
-      i.due ? `due=${i.due}` : "",
-      i.supersededBy ? `superseded_by=${i.supersededBy}` : "",
-      i.reason ? `rationale=${i.reason}` : "",
-      i.pinned ? "HUMAN-EDITED" : "",
-      `since=${i.evidence[0]?.ts ?? "?"}`,
-    ]
-      .filter(Boolean)
-      .join(", ");
-    out.push(`- ${i.id} | ${i.kind} | ${i.status} | ${i.title} — ${i.detail} (${extra})`);
+  const items = state.order.items.map((id) => state.items[id]!);
+  out.push("TOPICS (id — title: question), with their items (id | kind | status | title — detail):");
+  if (state.order.topics.length === 0) out.push("(none yet)");
+  for (const tid of state.order.topics) {
+    const t = state.topics[tid]!;
+    out.push(`- ${t.id} — ${t.title}: ${t.question}`);
+    for (const i of items.filter((x) => x.topic === tid)) out.push(itemLine(i));
   }
+  const loose = items.filter((i) => !i.topic || !state.topics[i.topic]);
+  out.push("MEETING-WIDE ITEMS (no topic):");
+  if (loose.length === 0) out.push("(none)");
+  for (const i of loose) out.push(itemLine(i));
   return out.join("\n");
 }
 
@@ -159,15 +177,18 @@ export class Scribe {
   }
 
   async step(input: StepInput): Promise<StepResult> {
-    if (input.mode === "review") return this.review(input);
+    if (input.mode === "review" || input.mode === "consolidate") return this.review(input);
 
     const restart = this.needsCheckpoint();
     if (restart) this.reset();
     let text: string;
+    const notices = input.notices?.length
+      ? `<changes_outside_this_conversation>\n${input.notices.join("\n")}\n</changes_outside_this_conversation>\n\n`
+      : "";
     if (restart) {
       const firstFresh = input.fresh[0]?.idx ?? input.transcript.length;
       const context = input.transcript.filter((u) => u.idx < firstFresh).slice(-this.config.contextLines);
-      text = [
+      text = notices + [
         "<doc_state>",
         describeItems(input.state),
         "</doc_state>",
@@ -181,9 +202,6 @@ export class Scribe {
         "</new_transcript>",
       ].join("\n");
     } else {
-      const notices = input.notices?.length
-        ? `<changes_outside_this_conversation>\n${input.notices.join("\n")}\n</changes_outside_this_conversation>\n\n`
-        : "";
       text = `${notices}<new_transcript>\n${input.fresh.map(line).join("\n")}\n</new_transcript>`;
     }
 
@@ -201,20 +219,30 @@ export class Scribe {
     return result.step;
   }
 
-  /** End-of-meeting review: a separate one-off conversation over the full transcript. */
+  /**
+   * Review passes run as separate one-off conversations (the main conversation stays
+   * append-only): "review" over the whole meeting at the end, "consolidate" over the
+   * last few minutes while the meeting is going.
+   */
   private async review(input: StepInput): Promise<StepResult> {
+    const consolidate = input.mode === "consolidate";
+    const end = input.transcript.at(-1)?.t ?? 0;
+    const lines = consolidate ? input.transcript.filter((u) => u.t >= end - (input.windowSec ?? 480)) : input.transcript;
     const text = [
       "<doc_state>",
       describeItems(input.state),
       "</doc_state>",
       "",
-      "<full_transcript>",
-      input.transcript.map(line).join("\n"),
-      "</full_transcript>",
+      consolidate ? "<recent_transcript>" : "<full_transcript>",
+      lines.map(line).join("\n"),
+      consolidate ? "</recent_transcript>" : "</full_transcript>",
       "",
-      REVIEW_INSTRUCTIONS,
+      consolidate ? CONSOLIDATE_INSTRUCTIONS : REVIEW_INSTRUCTIONS,
     ].join("\n");
+    const keepTokens = this.lastInputTokens;
     const result = await this.run([], text, input);
+    // A one-off pass must not make the main conversation think it has grown.
+    this.lastInputTokens = keepTokens;
     return result.step;
   }
 

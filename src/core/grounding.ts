@@ -72,7 +72,10 @@ export function ground(ts: string, quote: string, transcript: Utterance[]): Grou
       : transcript.find(
           (u) =>
             Math.abs(u.t - t) <= 90 &&
-            (n >= 2 ? normalize(u.text).includes(nq) : n === 1 && normalize(u.text) === nq),
+            (n >= 2
+              ? normalize(u.text).includes(nq)
+              : // one word: the whole line, or the word that opens it ("Agreed. The secrets...")
+                normalize(u.text) === nq || normalize(u.text).split(" ")[0] === nq),
         );
     if (hit) return { ok: true, utterance: hit };
     return { ok: false, error: `quote "${quote}" is too short to verify; quote at least three words of what was said.` };

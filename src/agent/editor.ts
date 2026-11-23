@@ -55,7 +55,10 @@ const Plan = z.object({
 export type Plan = z.infer<typeof Plan>;
 
 export interface EditInput {
+  /** State the plan is made from. */
   state: DocState;
+  /** The live state at apply time (the scribe may have moved on during the call). */
+  current?: () => DocState;
   apply: ApplyFn;
   signal?: AbortSignal;
 }
@@ -64,13 +67,20 @@ function describeForEditor(state: DocState): string {
   const out: string[] = [];
   out.push(`Title: ${state.meeting.title || "(not set)"}`);
   if (state.meeting.context) out.push(`Context: ${state.meeting.context}`);
-  out.push("", "ITEMS (id | kind | status | title — detail):");
-  for (const id of state.order.items) {
-    const i = state.items[id]!;
-    if (i.kind === "action_item") continue;
+  const line = (i: Item) => {
     const rationale = i.reason && ["accepted", "tentative"].includes(i.status) ? ` (why: ${i.reason})` : "";
-    out.push(`- ${i.id} | ${i.kind} | ${i.status} | ${i.title} — ${i.detail}${rationale}`);
+    return `  - ${i.id} | ${i.kind} | ${i.status} | ${i.title} — ${i.detail}${rationale}`;
+  };
+  const items = state.order.items.map((id) => state.items[id]!).filter((i) => i.kind !== "action_item");
+  out.push("", "TOPICS and their items (id | kind | status | title — detail):");
+  for (const tid of state.order.topics) {
+    const t = state.topics[tid]!;
+    const its = items.filter((i) => i.topic === tid);
+    if (!its.length) continue;
+    out.push(`- ${t.title}: ${t.question}`, ...its.map(line));
   }
+  const loose = items.filter((i) => !i.topic || !state.topics[i.topic]);
+  if (loose.length) out.push("- (meeting-wide)", ...loose.map(line));
   out.push("", "CURRENT DIAGRAM COMPONENTS (id | type | name | basis | shown as | description):");
   const comps = state.order.components.map((id) => state.components[id]!).filter((c) => !c.removed);
   if (comps.length === 0) out.push("(none yet)");
@@ -95,22 +105,26 @@ function slug(id: string): string {
 }
 
 const STOP = new Set(
-  "the and for with from into that this then than when what which while will would should could their there about after before over under using used only also each every more most less such same other between through without within design option options".split(
+  "the and for with from into that this then than when what which while will would should could their there about after before over under using used only also each every more most less such same other between through without within design option options delivery deliveries store stores storage events event queue queues service services data system systems customer customers endpoint endpoints worker workers message messages record records request requests api".split(
     " ",
   ),
 );
 
 /**
- * Terms that only belong to options the team turned down: words from the titles of
- * rejected/superseded/dropped items that appear in no live item's title. The overview
- * must not mention them, whatever the model wrote.
+ * Terms that only belong to options the team turned down: distinctive words from the
+ * titles of rejected/superseded/dropped items that appear nowhere in a live item (title
+ * or detail). Short names count when written in capitals or with digits (SNS, S3, RDS).
+ * The overview must not mention them, whatever the model wrote.
  */
 export function staleTerms(state: DocState): string[] {
-  const words = (s: string) => s.toLowerCase().match(/[a-z][a-z0-9]{3,}/g) ?? [];
+  const words = (s: string) =>
+    (s.match(/[A-Za-z][A-Za-z0-9]{1,}/g) ?? [])
+      .filter((w) => w.length >= 4 || /[A-Z]{2,}|\d/.test(w))
+      .map((w) => w.toLowerCase());
   const live = new Set<string>();
   for (const i of Object.values(state.items)) {
     if (["accepted", "tentative", "open", "proposed", "resolved", "done"].includes(i.status)) {
-      for (const w of words(i.title)) live.add(w);
+      for (const w of words(`${i.title} ${i.detail}`)) live.add(w);
     }
   }
   const stale = new Set<string>();
@@ -153,7 +167,7 @@ export function reconcile(state: DocState, plan: Plan): Op[] {
     const id = slug(c.id);
     const basis = [...new Set(c.basis.filter(exists))];
     if (!basis.length || !c.name.trim()) continue;
-    wanted.set(id, { ...c, id, basis });
+    wanted.set(id, { ...c, id, basis, name: c.name.trim().slice(0, 60) });
   }
   for (const c of wanted.values()) {
     const cur = state.components[c.id];
@@ -165,7 +179,7 @@ export function reconcile(state: DocState, plan: Plan): Op[] {
       cur.description !== c.description ||
       !sameSet(cur.basis, c.basis)
     ) {
-      ops.push({ name: "upsert_component", input: { id: c.id, name: c.name.slice(0, 60), type: c.type, description: c.description, basis: c.basis } });
+      ops.push({ name: "upsert_component", input: { id: c.id, name: c.name, type: c.type, description: c.description, basis: c.basis } });
     }
   }
   for (const id of state.order.components) {
@@ -181,12 +195,12 @@ export function reconcile(state: DocState, plan: Plan): Op[] {
     const to = slug(e.to);
     const basis = [...new Set(e.basis.filter(exists))];
     if (from === to || !wanted.has(from) || !wanted.has(to) || !basis.length) continue;
-    wantedEdges.set(`${from}->${to}`, { ...e, from, to, basis });
+    wantedEdges.set(`${from}->${to}`, { ...e, from, to, basis, label: e.label.trim().slice(0, 40) });
   }
   for (const [key, e] of wantedEdges) {
     const cur = state.edges[key];
     if (!cur || cur.removed || cur.label !== e.label || !sameSet(cur.basis, e.basis)) {
-      ops.push({ name: "upsert_edge", input: { from: e.from, to: e.to, label: e.label.slice(0, 40), basis: e.basis } });
+      ops.push({ name: "upsert_edge", input: { from: e.from, to: e.to, label: e.label, basis: e.basis } });
     }
   }
   for (const id of state.order.edges) {
@@ -198,7 +212,8 @@ export function reconcile(state: DocState, plan: Plan): Op[] {
   }
 
   const overview = firstSentences(screenOverview(plan.overview, staleTerms(state)), 3, 700);
-  if (overview !== state.meeting.overview) ops.push({ name: "set_overview", input: { overview } });
+  // If screening removed everything, keep the previous overview rather than blank it.
+  if (overview && overview !== state.meeting.overview) ops.push({ name: "set_overview", input: { overview } });
   return ops;
 }
 
@@ -227,8 +242,9 @@ export class Editor {
 
     let applied = 0;
     const errors: string[] = [];
-    // Apply against the state as it is now (the scribe may have moved on meanwhile).
-    for (const op of reconcile(input.state, plan)) {
+    // Diff and screen against the state as it is NOW: the scribe may have changed items
+    // while the model was thinking.
+    for (const op of reconcile(input.current?.() ?? input.state, plan)) {
       const r = input.apply(op);
       if (r.ok) applied++;
       else errors.push(`${op.name}: ${r.error}`);

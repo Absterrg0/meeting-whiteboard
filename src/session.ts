@@ -32,9 +32,16 @@ export interface SchedulePolicy {
   editorDebounceMs: number;
   /** ...but no later than this after the first unhandled change (wall ms). */
   editorMaxWaitMs: number;
+  /** Run a consolidation pass over the recent meeting this often (meeting seconds; 0 = off). */
+  consolidateEverySec: number;
 }
 
-export const DEFAULT_SCHEDULE: SchedulePolicy = { debounceMs: 600, editorDebounceMs: 4000, editorMaxWaitMs: 15000 };
+export const DEFAULT_SCHEDULE: SchedulePolicy = {
+  debounceMs: 600,
+  editorDebounceMs: 4000,
+  editorMaxWaitMs: 15000,
+  consolidateEverySec: 300,
+};
 
 /** Item changes that can affect the diagram or overview (action items and facts cannot). */
 function affectsArchitecture(e: ChangeEvent, state: DocState): boolean {
@@ -122,6 +129,8 @@ export class MeetingSession extends EventEmitter {
   mode: "live" | "replay" | "headless" = "headless";
   agentBusy = false;
   editorBusy = false;
+  consolidating = false;
+  private lastConsolidateAt = 0;
   metrics: Metrics = { lineLatency: [], diagramLag: [], turnSeconds: [], editorSeconds: [], turnLines: [] };
   reviewOnFinish: boolean;
 
@@ -271,9 +280,12 @@ export class MeetingSession extends EventEmitter {
     this.status = "done";
     this.stopTimers();
     this.replayQueue = [];
+    if (this.editorTimer) clearTimeout(this.editorTimer);
+    this.editorTimer = null;
     this.changed();
     this.finishing = (async () => {
       await this.drain();
+      while (this.consolidating) await new Promise<void>((r) => this.internal.once("idle", () => r()));
       if (this.reviewOnFinish && this.transcript.length > 0 && !this.disposed) {
         await this.whenIdle("agent");
         await this.runAgent("review");
@@ -385,6 +397,7 @@ export class MeetingSession extends EventEmitter {
     const label = mode === "batch" ? `${fresh[0]?.ts}–${fresh.at(-1)?.ts}` : "End-of-meeting review";
     const notices = mode === "batch" ? this.notices.splice(0) : [];
     let itemsChanged = false;
+    const appliedNow: string[] = [];
     this.changed();
     const started = performance.now();
     try {
@@ -396,6 +409,7 @@ export class MeetingSession extends EventEmitter {
         notices,
         signal: this.abort.signal,
         apply: this.applier("agent", transcript, meetingTime, (e) => {
+          appliedNow.push(e.summary);
           if (affectsArchitecture(e, this.state)) itemsChanged = true;
           if (mode === "review") this.notices.push(`[review] ${e.summary}`);
         }),
@@ -411,10 +425,12 @@ export class MeetingSession extends EventEmitter {
       for (const e of result.errors) this.addLog("error", e);
       this.failures = 0;
       if (itemsChanged) this.markEditorDirty(fresh[0]?.t ?? meetingTime);
+      if (mode === "batch" && !this.manual) this.maybeConsolidate();
       return fresh;
     } catch (err) {
       if (this.disposed) return [];
-      this.notices.unshift(...notices);
+      // The retry restarts from a state snapshot; tell it what this attempt already applied.
+      this.notices.unshift(...notices, ...appliedNow.map((x) => `[already applied before an interrupted turn] ${x}`));
       this.addLog("error", `${label}: agent call failed: ${(err as Error).message}`);
       if (itemsChanged) this.markEditorDirty(fresh[0]?.t ?? meetingTime);
       if (mode === "batch") {
@@ -438,6 +454,50 @@ export class MeetingSession extends EventEmitter {
     }
   }
 
+  /**
+   * Periodic consolidation: a one-off scribe pass over the last few minutes, run beside the
+   * normal turns (it doesn't block them), so drift is fixed during long meetings rather
+   * than only at the end.
+   */
+  maybeConsolidate(): Promise<void> {
+    const every = this.policy.consolidateEverySec;
+    const now = this.transcript.at(-1)?.t ?? 0;
+    if (!every || this.consolidating || this.disposed || now - this.lastConsolidateAt < every) return Promise.resolve();
+    this.lastConsolidateAt = now;
+    return this.runConsolidation(Math.max(every * 1.6, 300));
+  }
+
+  private async runConsolidation(windowSec: number) {
+    this.consolidating = true;
+    const transcript = this.transcript.slice();
+    const meetingTime = transcript.at(-1)?.t ?? 0;
+    let itemsChanged = false;
+    try {
+      const result = await this.agent.step({
+        state: this.state,
+        transcript,
+        fresh: [],
+        mode: "consolidate",
+        windowSec,
+        signal: this.abort.signal,
+        apply: this.applier("agent", transcript, meetingTime, (e) => {
+          this.notices.push(`[consolidation] ${e.summary}`);
+          if (affectsArchitecture(e, this.state)) itemsChanged = true;
+        }),
+      });
+      this.usage = mergeUsage(this.usage, result.usage);
+      this.addLog("batch", `Consolidation (${formatTs(meetingTime)}): ${result.applied} change(s). ${result.note}`.trim());
+      for (const e of result.errors) this.addLog("error", `consolidation: ${e}`);
+      if (itemsChanged) this.markEditorDirty(meetingTime);
+    } catch (err) {
+      if (!this.disposed) this.addLog("error", `consolidation failed: ${(err as Error).message}`);
+    } finally {
+      this.consolidating = false;
+      this.internal.emit("idle");
+      this.changed();
+    }
+  }
+
   /** One editor run: diagram and overview from the current items. */
   async runEditor(): Promise<void> {
     if (!this.agent.edit || this.disposed) return;
@@ -454,6 +514,7 @@ export class MeetingSession extends EventEmitter {
     try {
       const result = await this.agent.edit({
         state: this.state,
+        current: () => this.state,
         signal: this.abort.signal,
         apply: this.applier("editor", this.transcript, this.meetingTime()),
       });
@@ -463,13 +524,28 @@ export class MeetingSession extends EventEmitter {
       this.addLog("editor", `${result.applied} diagram/overview change(s). ${result.note}`.trim());
       for (const e of result.errors) this.addLog("error", `editor: ${e}`);
     } catch (err) {
-      if (!this.disposed) this.addLog("error", `editor failed: ${(err as Error).message}`);
+      if (!this.disposed) {
+        this.addLog("error", `editor failed: ${(err as Error).message}`);
+        // Keep the work pending so the diagram can't stay stale; retry after a pause.
+        this.editorDirty = true;
+        this.editorDirtySince = Math.min(this.editorDirtySince ?? since ?? this.meetingTime(), since ?? Infinity);
+        if (!this.manual) {
+          this.editorFirstDirtyWall = Date.now();
+          if (this.editorTimer) clearTimeout(this.editorTimer);
+          this.editorTimer = setTimeout(() => {
+            this.editorTimer = null;
+            void this.runEditor();
+          }, 5000);
+        }
+      }
     } finally {
       this.editorBusy = false;
       this.internal.emit("idle");
       this.changed();
       // Items changed while it ran: go again (debounced).
-      if (this.editorDirty && !this.manual && !this.disposed) this.markEditorDirty(this.editorDirtySince ?? this.meetingTime());
+      if (this.editorDirty && !this.manual && !this.disposed && !this.editorTimer) {
+        this.markEditorDirty(this.editorDirtySince ?? this.meetingTime());
+      }
     }
   }
 
@@ -562,8 +638,11 @@ export async function runHeadless(
   let editorFree = 0;
   let i = 0;
   const n = utterances.length;
+  const debounce = policy.debounceMs / 1000;
   while (i < n || s.pendingCount() > 0) {
-    if (s.pendingCount() === 0 && i < n) clock = Math.max(clock, utterances[i]!.t);
+    // Scribe idle and nothing pending: wait for the next line, plus the debounce that
+    // lets lines arriving together go into one turn.
+    if (s.pendingCount() === 0 && i < n) clock = Math.max(clock, utterances[i]!.t + debounce);
     while (i < n && utterances[i]!.t <= clock) {
       const u = utterances[i++]!;
       s.setClock(Math.max(clock, u.t));
@@ -575,17 +654,21 @@ export async function runHeadless(
     clock += (performance.now() - t0) / 1000;
     s.setClock(clock);
     for (const u of lines) s.metrics.lineLatency.push(Math.max(0, clock - u.t));
-    // The editor runs on its own timeline, debounced as in live mode: once it is free and
-    // either no line is due within the debounce window or the max wait has passed.
+    // Consolidation runs beside the scribe in live mode, so it does not advance the clock.
+    await s.maybeConsolidate();
+    // The editor runs on its own timeline, debounced as in live mode: it starts once it is
+    // free and either no line is due within the debounce window or the max wait has passed.
     const since = s.editorPendingSince();
-    if (s.editorDirty && since !== null && clock >= editorFree) {
+    if (s.editorDirty && since !== null) {
       const nextLine = i < n ? utterances[i]!.t : Infinity;
-      const quietSoon = nextLine - clock >= policy.editorDebounceMs / 1000;
+      const ready = Math.max(editorFree, clock + policy.editorDebounceMs / 1000);
+      const quietSoon = nextLine >= ready;
       const waitedLong = clock - since >= policy.editorMaxWaitMs / 1000;
       if (quietSoon || waitedLong) {
+        const start = quietSoon ? ready : Math.max(editorFree, clock);
         const e0 = performance.now();
         await s.runEditor();
-        editorFree = clock + (performance.now() - e0) / 1000;
+        editorFree = start + (performance.now() - e0) / 1000;
         s.metrics.diagramLag.push(Math.max(0, editorFree - since));
       }
     }

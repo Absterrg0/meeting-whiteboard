@@ -14,7 +14,7 @@ import { basename, join } from "node:path";
 import { z } from "zod";
 import { configFromEnv, MeetingAgent, type AgentConfig } from "./agent/index.js";
 import { addUsage, emptyUsage, languageModel, parseModel, providerOptions } from "./agent/llm.js";
-import { componentVisibility, edgeVisibility, toMarkdown, toMermaid } from "./core/render.js";
+import { componentVisibility, edgeVisibility, HISTORY_LINE, toMarkdown, toMermaid } from "./core/render.js";
 import type { DocState, Utterance } from "./core/types.js";
 import { parseTranscript } from "./ingest/transcript.js";
 import { percentile, runHeadless } from "./session.js";
@@ -61,9 +61,11 @@ export function currentSections(markdown: string): string {
     .map((h) => markdown.indexOf(h))
     .filter((i) => i >= 0);
   const head = cut.length ? markdown.slice(0, Math.min(...cut)) : markdown;
+  // Labelled history lines inside a topic ("- Considered: ~~Kafka~~...", "- Replaced: ...")
+  // record what was turned down; they are not part of the current design.
   return head
     .split("\n")
-    .filter((l) => !/^\s*- Replaces:/.test(l))
+    .filter((l) => !/^\s*- Replaces:/.test(l) && !HISTORY_LINE.test(l.trim()))
     .join("\n");
 }
 

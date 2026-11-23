@@ -93,7 +93,7 @@ describe("update_item", () => {
       .apply("update_item", { id: "dec-redis", status: "accepted", reason: "Already run it", ts: "00:01:30", quote: "we're going with Redis" });
     const it = h.state.items["dec-redis"]!;
     expect(it.status).toBe("accepted");
-    expect(it.reason).toBe("Already run it");
+    expect(it.reason).toBeNull(); // the change reason goes to history; rationale only when given
     expect(it.history).toEqual([
       { ts: "00:01:30", field: "status", from: "proposed", to: "accepted", reason: "Already run it", source: "agent" },
     ]);

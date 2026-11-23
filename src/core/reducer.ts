@@ -372,11 +372,14 @@ const updateItem: Handler<UpdateItem> = (state, input, ctx) => {
     else if (!item.reason && input.reason !== "edited in UI") item.reason = input.reason;
   } else if (input.rationale !== undefined) {
     item.reason = input.rationale;
-  } else if (statusChanged) {
+  } else if (statusChanged && ["rejected", "dropped", "resolved"].includes(item.status)) {
+    // Why it was turned down / closed is exactly what the doc should say.
     item.reason = input.reason;
   } else if (detailChanged) {
     item.reason = null;
   }
+  // Accepting something keeps its rationale: "Priya agreed" is the reason for the
+  // change (it goes to the changelog), not a reason the design is right.
   const detailChange = changes.find((c) => c.field === "detail");
   if (detailChange && ctx.source === "agent") {
     checkRetiredValues(detailChange.from ?? "", item.detail, { title: item.title, rationale: item.reason });
