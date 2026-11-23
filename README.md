@@ -18,7 +18,17 @@ cp .env.example .env     # put ANTHROPIC_API_KEY (and/or OPENAI_API_KEY) in .env
 pnpm start               # builds the UI and serves it on http://localhost:8787
 ```
 
-In the UI, pick a transcript (or paste/upload one), a speed, and press Start. Or choose **Go live** (microphone / meeting tab audio) or **Join a meeting** (bot). Type into the meeting at any time with the box under the transcript, e.g. "Actually, let's make it seven days", and correct the agent in the Decisions tab.
+The start screen offers four ways in:
+- **Replay a transcript** (pick one, or paste/upload any export) at a chosen speed;
+- **Go live** with your microphone or a meeting tab's audio;
+- **Join a meeting** with the bot;
+- **Open a past session** from `out/`. It opens instantly, costs nothing, and can be replayed to watch the doc build up.
+
+The meeting view is a single document:
+- a title, the summary, and the architecture diagram (pan/zoom; hover a component to see its connections; toggle proposals);
+- one section per topic.
+
+A sidebar holds the **Activity** feed (each change in plain words, with the quote behind it) and the live **Transcript**. Type into the meeting at any time ("Actually, let's make it seven days"). Hover any item to confirm, edit, reject or replace it.
 
 ```bash
 pnpm dev                                    # server + Vite dev server with hot reload
@@ -108,7 +118,7 @@ These are in `src/agent/prompt.ts`, as a status rubric applied the same way ever
 
 ### Human corrections
 
-In the Decisions tab any item can be accepted, rejected, dropped or edited, and new items can be added. An edit goes through the same reducer as an event with `source: human`, pins the item, and is passed to the scribe as a notice on its next turn. The agent can still change a pinned item, but only with a quote from a line said after the edit. So a correction survives the agent re-reading the same discussion, while a real revisit later in the meeting is still picked up.
+In the document, hover any item to confirm, edit, reject or replace it; items the agent was unsure about carry a "to confirm" marker. An edit goes through the same reducer as an event with `source: human`, pins the item, and is passed to the scribe as a notice on its next turn. The agent can still change a pinned item, but only with a quote from a line said after the edit. So a correction survives the agent re-reading the same discussion, while a real revisit later in the meeting is still picked up.
 
 ## Results
 
@@ -154,7 +164,7 @@ src/agent/      scribe, editor, prompts, provider layer (Vercel AI SDK: Anthropi
 src/session.ts  scheduling, meeting clock, replay, simulated-live headless runs, human edits, outputs
 src/ingest/     transcript format detection and parsing
 src/live/       browser audio relay to OpenAI realtime transcription, Recall.ai bot, tunnel
-src/server.ts   HTTP API + SSE for the UI
+src/server.ts   HTTP API; SSE stream (full snapshot on connect, then small deltas: src/wire.ts)
 src/cli.ts      headless replay        src/eval.ts   multi-run eval with stability metrics
 web/            React UI               transcripts/, expected/   meetings and expected outcomes
 test/           unit tests             docs/live-sources.md      live input details

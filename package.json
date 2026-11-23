@@ -13,7 +13,8 @@
     "test": "vitest run",
     "typecheck": "tsc --noEmit -p tsconfig.json && tsc --noEmit -p web/tsconfig.json",
     "live:demo": "tsx scripts/live-audio-demo.ts",
-    "recall:sim": "tsx scripts/recall-simulator.ts"
+    "recall:sim": "tsx scripts/recall-simulator.ts",
+    "attendee:sim": "tsx scripts/attendee-simulator.ts"
   },
   "engines": {
     "node": ">=20"
