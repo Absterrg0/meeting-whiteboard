@@ -127,7 +127,7 @@ Then, in Attendee's UI:
 
 1. Open http://localhost:8000 and sign up. The confirmation link is printed in the app log: `docker compose -f dev.docker-compose.yaml logs attendee-app-local | grep confirm-email`.
 2. **API Keys** → create a key. Put it in this project's `.env` as `ATTENDEE_API_KEY`.
-3. **Settings → Credentials → OpenAI** → paste an OpenAI API key. Attendee uses it to transcribe each participant with `gpt-4o-transcribe` (about $0.006 per minute). The key is stored encrypted in Attendee's database.
+3. Optional, recommended: **Settings → Credentials → OpenAI** → paste an OpenAI API key. **No OpenAI key?** Skip this and leave `ATTENDEE_TRANSCRIPTION` unset: the bot then uses the meeting's own closed captions, which are free and still carry real names, but are rougher on technical terms. Attendee uses it to transcribe each participant with `gpt-4o-transcribe` (about $0.006 per minute). The key is stored encrypted in Attendee's database.
 
 And in this project's `.env`:
 
